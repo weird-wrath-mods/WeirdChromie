@@ -144,6 +144,10 @@ local function gossip_enabled()
   return WeirdChromieDB and WeirdChromieDB.auto_gossip ~= false
 end
 
+local function silence_enabled()
+  return not WeirdChromieDB or WeirdChromieDB.silence ~= false
+end
+
 local function handle_gossip_show()
   if not gossip_enabled() or IsControlKeyDown() then return end
 
@@ -223,6 +227,7 @@ local function debug_print(pattern_source, msg)
 end
 
 local function system_filter(self, event, msg, ...)
+  if not silence_enabled() then return false end
   local lowered = string.lower(strip_colors(msg or ""))
   for _, entry in ipairs(compiled_patterns) do
     if entry.plain then
@@ -242,6 +247,7 @@ local function system_filter(self, event, msg, ...)
 end
 
 local function monster_yell_filter(self, event, msg, sender, ...)
+  if not silence_enabled() then return false end
   if sender and ignore_npc[sender] then
     return true
   end
@@ -277,11 +283,21 @@ local function make_check(name, label, tooltip, anchor, x, y)
   return cb
 end
 
+local cbSilence = make_check(
+  "WeirdChromieOptionSilence",
+  "Silence server spam",
+  "Filter out ChromieCraft server-spam system messages (BG/Arena queue announces, Top PvP leaderboard, server notices, etc.) and configured NPC yells.",
+  subtitle, 0, -16)
+cbSilence:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.silence = self:GetChecked() and true or false
+end)
+
 local cbGossip = make_check(
   "WeirdChromieOptionAutoGossip",
   "Auto-skip gossip dialogues",
   "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, plus per-NPC scripted skips). Hold Ctrl to bypass for one interaction.",
-  subtitle, 0, -16)
+  cbSilence)
 cbGossip:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
@@ -299,6 +315,7 @@ end)
 
 optionsPanel:SetScript("OnShow", function()
   WeirdChromieDB = WeirdChromieDB or {}
+  cbSilence:SetChecked(WeirdChromieDB.silence ~= false)
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
 end)
@@ -330,6 +347,12 @@ SlashCmdList["WEIRDCHROMIE"] = function(arg)
   elseif arg == "gossip off" then
     WeirdChromieDB.auto_gossip = false
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r auto-gossip: OFF")
+  elseif arg == "silence" or arg == "silence on" then
+    WeirdChromieDB.silence = true
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r silence: ON")
+  elseif arg == "silence off" then
+    WeirdChromieDB.silence = false
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r silence: OFF")
   else
     open_options_panel()
   end
