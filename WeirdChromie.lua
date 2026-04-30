@@ -12,6 +12,8 @@ local system_patterns = {
   {"^%d+%. .- %- %d+$", " - "},  -- Leaderboard rows e.g. "1. Mustang - 212" through "10. Bryle - 78"
   'Check all PvP statistics', -- pvp footer
   '^Visit Chromie',
+  '^The best PvP players of every month',
+  '^Visit www.Chromie',
 
   '^Welcome to ChromieCraft',
   '^This server runs on AzerothCore',
@@ -21,6 +23,7 @@ local system_patterns = {
 
   '^This is a NON-profit',
   '^Consider supporting',
+  '^You can buy cosmetic',
   '^The /world channel is english only',
 
   '^Tip: Cross-faction',
