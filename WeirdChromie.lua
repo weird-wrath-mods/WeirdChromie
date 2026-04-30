@@ -8,7 +8,9 @@
 local system_patterns = {
   '^[BG Queue Announcer]',
   '^[Arena Queue Announcer]',
-  '^Top PvP players of the month',
+  '^Top PvP players of the month', -- pvp header
+  {"^%d+%. .- %- %d+$", " - "},  -- Leaderboard rows e.g. "1. Mustang - 212" through "10. Bryle - 78"
+  'Check all PvP statistics', -- pvp footer
   '^Visit Chromie',
 
   '^Welcome to ChromieCraft',
@@ -21,6 +23,8 @@ local system_patterns = {
   '^Consider supporting',
 
   '^Tip: Cross-faction',
+  '^Tip: You can use the',
+  '^There is no guild recruitment in',
 }
 
 local compiled_patterns = {}
@@ -126,6 +130,13 @@ local gossip_skip_by_npc = {
   ["Lieutenant Sinclari"] = {
     briefing = "^Activate the crystals when we get in trouble",
     -- start    = "^Get your people to safety",
+  },
+  -- Halls of Stone progression dialogues
+  ["Brann Bronzebeard"] = {
+    honor      = "^Brann, it would be our honor",
+    move       = "^Let's move Brann, enough of the history lessons",
+    moving     = "^There will be plenty of time for this later Brann",
+    open_it    = "^We're with you Brann",
   },
 }
 
