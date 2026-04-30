@@ -21,6 +21,7 @@ local system_patterns = {
 
   '^This is a NON-profit',
   '^Consider supporting',
+  '^The /world channel is english only',
 
   '^Tip: Cross-faction',
   '^Tip: You can use the',
@@ -229,6 +230,19 @@ end
 local function system_filter(self, event, msg, ...)
   if not silence_enabled() then return false end
   local lowered = string.lower(strip_colors(msg or ""))
+
+  -- Truncate verbose [SERVER] announces at the first period (keep just the
+  -- headline like "[SERVER] Restart in 11 minute(s)." and drop the rest).
+  -- Color escapes never contain '.', so the first '.' in the raw message
+  -- is always a content period.
+  if string.find(lowered, "[server]", 1, true) == 1 then
+    local pos = string.find(msg, ".", 1, true)
+    if pos then
+      debug_print("[SERVER] truncate", msg)
+      return false, string.sub(msg, 1, pos) .. "|r", ...
+    end
+  end
+
   for _, entry in ipairs(compiled_patterns) do
     if entry.plain then
       local pos = string.find(lowered, entry.needle, 1, true)
