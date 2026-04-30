@@ -14,6 +14,7 @@ local system_patterns = {
   '^Visit Chromie',
   '^The best PvP players of every month',
   '^Visit www.Chromie',
+  '^You can queue for arenas',
 
   '^Welcome to ChromieCraft',
   '^This server runs on AzerothCore',
@@ -28,7 +29,11 @@ local system_patterns = {
 
   '^Tip: Cross-faction',
   '^Tip: You can use the',
+  '^Tip: Stuck on a quest',
   '^There is no guild recruitment in',
+  '^BGs have boosted XP',
+
+  '^Auction deposits are only', -- we need to determine real costs and adjust them
 }
 
 local compiled_patterns = {}
