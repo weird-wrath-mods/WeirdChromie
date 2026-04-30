@@ -8,6 +8,8 @@
 local system_patterns = {
   '^[BG Queue Announcer]',
   '^[Arena Queue Announcer]',
+  '^[Arena Queue]',
+  '^[BG Queue]',
   '^Top PvP players of the month', -- pvp header
   {"^%d+%. .- %- %d+$", " - "},  -- Leaderboard rows e.g. "1. Mustang - 212" through "10. Bryle - 78"
   'Check all PvP statistics', -- pvp footer
@@ -21,7 +23,8 @@ local system_patterns = {
   '^This server features a Recruit',
   '^This Server Max Account of Same IP is:',
   'joyous journeys',
-
+  
+  '^You can always find the latest news',
   '^This is a NON-profit',
   '^Consider supporting',
   '^You can buy cosmetic',
