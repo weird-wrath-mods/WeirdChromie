@@ -1,0 +1,12 @@
+## Interface: 30300
+## Title: WeirdChromie
+## Notes: Silence ChromieCraft server spam
+## X-Category: Interface Enhancements
+## X-Date: 2024-05-24
+## X-Website:
+## Version: 1.0.0
+## SavedVariables: WeirdChromieDB
+## OptionalDeps: pfUI, ShaguTweaks, Chatsuey, CleanChat, Prat, OnlyASCII, ShaguChat, ShaguColor, SpamThrottle, TurtleChatColors, Sink-1.0, Parrot
+# ^ No real dependency, just making sure they load first to reduce inconsistencies.
+
+WeirdChromie.lua
