@@ -23,9 +23,13 @@ local system_patterns = {
   '^This server features a Recruit',
   '^This Server Max Account of Same IP is:',
   'joyous journeys',
+
+  '^We are always looking for new contributors',
+  '^Have a look at: chromiecraft.com',
   
-  '^You can always find the latest news',
+  '^ChromieCraft.com is a free',
   '^This is a NON-profit',
+  '^You can always find the latest news',
   '^Consider supporting',
   '^You can buy cosmetic',
   '^The /world channel is english only',
@@ -33,6 +37,7 @@ local system_patterns = {
   '^Tip: Cross-faction',
   '^Tip: You can use the',
   '^Tip: Stuck on a quest',
+  '^Tip: Battlegrounds give experience',
   '^There is no guild recruitment in',
   '^BGs have boosted XP',
 
