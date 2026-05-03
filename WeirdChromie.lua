@@ -81,11 +81,6 @@ local ignore_npc = {
 -- Gossip skip (ported from LazyWeirdo)
 ------------------------------
 
--- Don't skip trainer (often used for untalent); spirit healer has its own confirm.
-local auto_gossip_types = {
-  taxi = true, battlemaster = true, vendor = true, banker = true, healer = true,
-}
-
 -- For options whose gossip type is "gossip" (plain dialogue), skip when the
 -- displayed text matches one of these Lua patterns.
 --
@@ -113,7 +108,7 @@ local gossip_skip_by_npc = {
   -- Stratholme: Culling of Stratholme.
   -- Option texts taken from AzerothCore gossip_menu_option (menus 9586,
   -- 9595, 9612, 11277). Lore-investigation options are intentionally not
-  -- listed (e.g. "Why have I been sent back…", "So how does the Infinite
+  -- listed (e.g. "Why have I been sent back...", "So how does the Infinite
   -- Dragonflight plan to interfere?").
   ["Chromie"] = {
     skip_ahead = "skip us ahead to all the real action",        -- 9586/2
@@ -135,13 +130,16 @@ local gossip_skip_by_npc = {
   -- The Oculus: dragon mount handlers
   ["Verdisa"] = {
     green_flight = "wings of the green flight",
+    exchange = "want to exchange my",
   },
   ["Eternos"] = {
     bronze_flight = "wings of the bronze flight",
+    exchange = "want to exchange my",
   },
   ["Belgaristrasz"] = {
     where_next = "^So where do we go from here",
     red_flight = "wings of the red flight",
+    exchange = "want to exchange my",
   },
   -- Violet Hold entrance / event start
   ["Lieutenant Sinclari"] = {
@@ -168,9 +166,6 @@ end
 local function handle_gossip_show()
   if not gossip_enabled() or IsControlKeyDown() then return end
 
-  -- Brainwasher has a single gossip option but selecting it skips the quest
-  if UnitName("npc") == "Goblin Brainwashing Device" then return end
-
   -- If quests are involved, leave it to the player
   if GetGossipAvailableQuests() or GetGossipActiveQuests() then return end
 
@@ -181,6 +176,9 @@ local function handle_gossip_show()
   end
 
   -- Single non-gossip option (e.g. lone vendor): just click it.
+  -- With multiple options we never auto-click typed entries, a profession
+  -- trainer who also sells, etc., needs the player to choose. Configured
+  -- general/per-NPC skip lines below still fire regardless of option count.
   if opts[1] and not opts[2] and opts[1].gossip ~= "gossip" then
     SelectGossipOption(1)
     return
@@ -190,10 +188,6 @@ local function handle_gossip_show()
   local npc_lines = npc_name and gossip_skip_by_npc[npc_name] or nil
 
   for i, entry in ipairs(opts) do
-    if auto_gossip_types[entry.gossip] then
-      SelectGossipOption(i)
-      return
-    end
     if entry.gossip == "gossip" then
       for _, pattern in pairs(gossip_skip_by_npc.general) do
         if string.find(entry.text, pattern) then
@@ -223,6 +217,10 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
     local addon = ...
     if addon == "WeirdChromie" then
       WeirdChromieDB = WeirdChromieDB or {}
+      if WeirdChromieDB.drake_enabled == nil then WeirdChromieDB.drake_enabled = true end
+      if WeirdChromieDB.drake_locked  == nil then WeirdChromieDB.drake_locked  = false end
+      if apply_drake_position then apply_drake_position() end
+      if update_drake_button  then update_drake_button()  end
     end
   elseif event == "GOSSIP_SHOW" then
     handle_gossip_show()
@@ -287,6 +285,14 @@ end
 ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", system_filter)
 ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_YELL", monster_yell_filter)
 
+-- Forward declarations so the options panel's checkbox callbacks can
+-- reach into the drake-button section defined further down.
+local update_drake_button
+local apply_drake_position
+local options_open = false  -- forces the drake button visible while the
+                            -- options panel is open, so the user can see
+                            -- and reposition it from anywhere.
+
 ------------------------------
 -- Interface Options panel (Esc -> Interface -> AddOns -> WeirdChromie)
 ------------------------------
@@ -333,11 +339,47 @@ cbGossip:SetScript("OnClick", function(self)
   WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
 end)
 
+local cbDrakeEnabled = make_check(
+  "WeirdChromieOptionDrakeEnabled",
+  "Show Oculus drake essence button",
+  "Show the movable drake-essence quick-use button while inside The Oculus and holding any drake essence in your bags.",
+  cbGossip)
+cbDrakeEnabled:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.drake_enabled = self:GetChecked() and true or false
+  if update_drake_button then update_drake_button() end
+end)
+
+local cbDrakeLocked = make_check(
+  "WeirdChromieOptionDrakeLocked",
+  "Lock position",
+  "When unlocked, left-click and drag the drake-essence button to move it. Lock to prevent accidental drags.",
+  cbDrakeEnabled)
+-- Place on the same row as cbDrakeEnabled, just past its label.
+cbDrakeLocked:ClearAllPoints()
+cbDrakeLocked:SetPoint("LEFT", _G["WeirdChromieOptionDrakeEnabledText"], "RIGHT", 16, 0)
+cbDrakeLocked:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.drake_locked = self:GetChecked() and true or false
+end)
+
+local btnDrakeReset = CreateFrame("Button", "WeirdChromieOptionDrakeReset", optionsPanel, "UIPanelButtonTemplate")
+btnDrakeReset:SetWidth(110)
+btnDrakeReset:SetHeight(22)
+btnDrakeReset:SetPoint("LEFT", _G["WeirdChromieOptionDrakeLockedText"], "RIGHT", 12, 0)
+btnDrakeReset:SetText("Reset Position")
+btnDrakeReset.tooltipText = "Move the drake-essence button back to screen center."
+btnDrakeReset:SetScript("OnClick", function()
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.drake_pos = nil
+  if apply_drake_position then apply_drake_position() end
+end)
+
 local cbDebug = make_check(
   "WeirdChromieOptionDebug",
   "Debug capture (print silenced messages)",
   "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
-  cbGossip)
+  cbDrakeEnabled)
 cbDebug:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.debug = self:GetChecked() and true or false
@@ -347,7 +389,15 @@ optionsPanel:SetScript("OnShow", function()
   WeirdChromieDB = WeirdChromieDB or {}
   cbSilence:SetChecked(WeirdChromieDB.silence ~= false)
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
+  cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
+  cbDrakeLocked:SetChecked(WeirdChromieDB.drake_locked ~= false)
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
+  options_open = true
+  if update_drake_button then update_drake_button() end
+end)
+optionsPanel:SetScript("OnHide", function()
+  options_open = false
+  if update_drake_button then update_drake_button() end
 end)
 
 InterfaceOptions_AddCategory(optionsPanel)
@@ -359,31 +409,205 @@ local function open_options_panel()
 end
 
 ------------------------------
+-- Drake essence button (Oculus drake mounts)
+------------------------------
+-- Standalone movable button. Click uses whichever item from DRAKE_ESSENCES
+-- is currently in the player's bags. Outside DRAKE_ZONE the work is
+-- short-circuited.
+--
+-- The two configs below are intentionally hoisted so they can be swapped
+-- for testing (e.g. point them at food/drink in a leveling zone to verify
+-- bag-scan, cache, and click-to-use without entering the dungeon).
+
+-- local DRAKE_ZONE = "Borean Tundra"
+local DRAKE_ZONE = "The Oculus"
+
+local DRAKE_ESSENCES = {
+  { name = "Ruby Essence",    icon = "Interface\\Icons\\inv_misc_head_dragon_01" },
+  -- { name = "Frostberries",    icon = "Interface\\Icons\\inv_misc_head_dragon_01" },
+  { name = "Amber Essence",   icon = "Interface\\Icons\\inv_misc_head_dragon_bronze" },
+  -- { name = "Amber Essence",   icon = "Interface\\Icons\\inv_misc_head_dragon_bronze" },
+  { name = "Emerald Essence", icon = "Interface\\Icons\\inv_misc_head_dragon_green" },
+  -- { name = "Frostberry Juice", icon = "Interface\\Icons\\inv_misc_head_dragon_green" },
+}
+
+local drakeBtn = CreateFrame("Button", "WeirdChromieDrakeButton", UIParent, "SecureActionButtonTemplate")
+drakeBtn:Hide()
+-- Single secure macrotext dispatches both actions: leave the drake when in
+-- the vehicle UI, otherwise /use the held essence. apply_essence rewrites
+-- this when the held essence changes.
+drakeBtn:SetAttribute("type", "macro")
+drakeBtn:SetAttribute("macrotext",
+  "/click [vehicleui] VehicleMenuBarLeaveButton\n/use [novehicleui] " .. DRAKE_ESSENCES[1].name)
+
+-- Match the vehicle-leave button's natural size and effective scale
+-- (parent chain may scale differently than UIParent). Queried dynamically
+-- because both vary by client/skin and may not be set at file-load time.
+local function sync_drake_size()
+  local leave = VehicleMenuBarLeaveButton
+  local w = leave and leave:GetWidth()  or 0
+  local h = leave and leave:GetHeight() or 0
+  if w > 0 and h > 0 then
+    drakeBtn:SetWidth(w)
+    drakeBtn:SetHeight(h)
+  else
+    drakeBtn:SetWidth(40)
+    drakeBtn:SetHeight(40)
+  end
+  -- Match effective scale by compensating for our own parent's scale.
+  -- We parent to UIParent, so SetScale must equal leave:GetEffectiveScale()
+  -- divided by UIParent:GetEffectiveScale() to render at the same on-screen
+  -- size as the leave button.
+  if leave and leave.GetEffectiveScale then
+    local le = leave:GetEffectiveScale()
+    local ue = UIParent:GetEffectiveScale()
+    if le and ue and ue > 0 then
+      drakeBtn:SetScale(le / ue)
+    end
+  end
+end
+sync_drake_size()
+
+-- Position. Defaults to screen center; saved coords live in
+-- WeirdChromieDB.drake_pos and are applied after ADDON_LOADED.
+drakeBtn:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+
+apply_drake_position = function()
+  drakeBtn:ClearAllPoints()
+  local p = WeirdChromieDB and WeirdChromieDB.drake_pos
+  if p and p.point then
+    drakeBtn:SetPoint(p.point, UIParent, p.relPoint or p.point, p.x or 0, p.y or 0)
+  else
+    drakeBtn:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  end
+end
+
+local function save_drake_position()
+  local point, _, relPoint, x, y = drakeBtn:GetPoint()
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.drake_pos = { point = point, relPoint = relPoint, x = x, y = y }
+end
+
+drakeBtn:SetMovable(true)
+drakeBtn:RegisterForDrag("LeftButton")
+drakeBtn:SetScript("OnDragStart", function(self)
+  if WeirdChromieDB and WeirdChromieDB.drake_locked == false
+     and not InCombatLockdown() then
+    self:StartMoving()
+  end
+end)
+drakeBtn:SetScript("OnDragStop", function(self)
+  self:StopMovingOrSizing()
+  save_drake_position()
+end)
+
+local drakeIcon = drakeBtn:CreateTexture(nil, "ARTWORK")
+drakeIcon:SetAllPoints()
+drakeIcon:SetTexture(DRAKE_ESSENCES[1].icon)
+
+drakeBtn:SetScript("OnEnter", function(self)
+  GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+  GameTooltip:SetText(self._essenceName or DRAKE_ESSENCES[1].name)
+  GameTooltip:AddLine("Use the Oculus drake essence currently in your bags.", 1, 1, 1, true)
+  if WeirdChromieDB and WeirdChromieDB.drake_locked == false then
+    GameTooltip:AddLine("Drag to move (button is unlocked).", 0.6, 0.8, 1, true)
+  end
+  GameTooltip:Show()
+end)
+drakeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+local function find_held_essence()
+  for bag = 0, NUM_BAG_SLOTS do
+    for slot = 1, GetContainerNumSlots(bag) do
+      local link = GetContainerItemLink(bag, slot)
+      if link then
+        for _, e in ipairs(DRAKE_ESSENCES) do
+          if string.find(link, e.name, 1, true) then
+            return e
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local cachedEssence = nil
+local inOculus      = false
+
+local function apply_essence(e)
+  cachedEssence = e
+  drakeIcon:SetTexture(e.icon)
+  drakeBtn._essenceName = e.name
+  drakeBtn:SetAttribute("macrotext",
+    "/click [vehicleui] VehicleMenuBarLeaveButton\n/use [novehicleui] " .. e.name)
+end
+
+update_drake_button = function()
+  if not (WeirdChromieDB and WeirdChromieDB.drake_enabled ~= false) then
+    drakeBtn:Hide()
+    return
+  end
+  if options_open then
+    drakeBtn:Show()
+    return
+  end
+  if not inOculus then
+    drakeBtn:Hide()
+    return
+  end
+
+  local held = find_held_essence()
+  if WeirdChromieDB and WeirdChromieDB.debug then
+    DEFAULT_CHAT_FRAME:AddMessage(
+      "|cff33ff99[WC]|r drake: held=" ..
+      tostring(held and held.name or "nil") ..
+      " cached=" ..
+      tostring(cachedEssence and cachedEssence.name or "nil"))
+  end
+
+  if held then
+    if held ~= cachedEssence then apply_essence(held) end
+    drakeBtn:Show()
+  else
+    cachedEssence = nil
+    drakeBtn:Hide()
+  end
+end
+
+local drakeEvents = CreateFrame("Frame")
+drakeEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+drakeEvents:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+
+local function check_zone()
+  local nowOculus = GetRealZoneText() == DRAKE_ZONE
+  if nowOculus and not inOculus then
+    inOculus = true
+    drakeEvents:RegisterEvent("BAG_UPDATE")
+    update_drake_button()
+  elseif inOculus and not nowOculus then
+    inOculus = false
+    drakeEvents:UnregisterEvent("BAG_UPDATE")
+    drakeBtn:Hide()
+    cachedEssence = nil
+  end
+end
+
+drakeEvents:SetScript("OnEvent", function(self, event)
+  if event == "BAG_UPDATE" then
+    update_drake_button()
+  else
+    if event == "PLAYER_ENTERING_WORLD" then
+      sync_drake_size()
+    end
+    check_zone()
+  end
+end)
+
+------------------------------
 
 SLASH_WEIRDCHROMIE1 = "/wc"
 SLASH_WEIRDCHROMIE2 = "/weirdchromie"
-SlashCmdList["WEIRDCHROMIE"] = function(arg)
-  arg = string.lower(arg or "")
-  WeirdChromieDB = WeirdChromieDB or {}
-  if arg == "debug" or arg == "debug on" then
-    WeirdChromieDB.debug = true
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r debug capture: ON")
-  elseif arg == "debug off" then
-    WeirdChromieDB.debug = false
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r debug capture: OFF")
-  elseif arg == "gossip" or arg == "gossip on" then
-    WeirdChromieDB.auto_gossip = true
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r auto-gossip: ON")
-  elseif arg == "gossip off" then
-    WeirdChromieDB.auto_gossip = false
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r auto-gossip: OFF")
-  elseif arg == "silence" or arg == "silence on" then
-    WeirdChromieDB.silence = true
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r silence: ON")
-  elseif arg == "silence off" then
-    WeirdChromieDB.silence = false
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r silence: OFF")
-  else
-    open_options_panel()
-  end
+SlashCmdList["WEIRDCHROMIE"] = function()
+  open_options_panel()
 end
