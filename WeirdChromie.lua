@@ -18,6 +18,7 @@ local system_patterns = {
   '^Visit www.Chromie',
   '^You can queue for arenas',
 
+  '^ChromieCraft is a welcoming place',
   '^Welcome to ChromieCraft',
   '^This server runs on AzerothCore',
   '^This server features a Recruit',
@@ -42,6 +43,14 @@ local system_patterns = {
   '^BGs have boosted XP',
 
   '^Auction deposits are only', -- we need to determine real costs and adjust them
+
+  -- Weekly arena-point flush sequence; consolidated to a single
+  -- "Arena points updated." headline (rewritten on the final line below).
+  '^Flushing Arena points based on team ratings',
+  '^Distributing arena points to players',
+  '^Finished setting arena points for online players',
+  '^Modifying played count, arena points',
+  '^Modification done',
 }
 
 local compiled_patterns = {}
@@ -69,6 +78,56 @@ for _, def in ipairs(system_patterns) do
   end
   table.insert(compiled_patterns, entry)
 end
+
+-- Rewrite rules for system messages. Each entry needs a `needle`
+-- (lowercase plain substring used to match), and either:
+--   `replacement`: a fixed string to emit, OR
+--   `rewrite(msg)`: a function returning the replacement string (or nil
+--                   to leave the message unchanged).
+-- `anchored = true` requires the needle to match at position 1.
+local system_rewrites = {
+  {
+    label = "[SERVER] truncate",
+    needle = "[server]",
+    anchored = true,
+    rewrite = function(msg)
+      local pos = string.find(msg, ".", 1, true)
+      return pos and (string.sub(msg, 1, pos) .. "|r") or nil
+    end,
+  },
+  {
+    label = "[arena points consolidate]",
+    needle = "done flushing arena points",
+    replacement = "Arena points updated.",
+  },
+}
+
+-- Auto-pass on group loot rolls when the rolled item link contains any of
+-- these plain-substring patterns. The four cooking recipes are the random
+-- Northrend mob drops (BoP, but still rolled in group loot mode); every
+-- other Wrath cooking recipe is vendor-purchased and never hits a roll.
+local auto_pass_items = {
+  "Heavy Frostweave Bandage",
+  "Recipe: Bad Clams",
+  "Recipe: Haunted Herring",
+  "Recipe: Last Week's Mammoth",
+  "Recipe: Tasty Cupcake",
+}
+
+-- BoP jewelcrafting designs that drop from Northrend dungeon bosses.
+-- Roll action is configurable (pass/greed/need) via WeirdChromieDB.jc_design_roll.
+local jc_design_drops = {
+  "Design: Austere Earthsiege Diamond",   -- Utgarde Pinnacle, King Ymiron
+  "Design: Bracing Earthsiege Diamond",   -- The Oculus, Cache of Eregos
+  "Design: Eternal Earthsiege Diamond",   -- Halls of Lightning, Loken
+  "Design: Deadly Monarch Topaz",         -- The Nexus (heroic), Keristrasza
+  "Design: Deft Monarch Topaz",           -- Halls of Stone (heroic), Sjonnir
+  "Design: Fierce Monarch Topaz",         -- Utgarde Keep (heroic), Ingvar
+  "Design: Precise Scarlet Ruby",         -- Ahn'kahet (heroic), Herald Volazj
+  "Design: Thick Autumn's Glow",          -- Violet Hold (heroic), Cyanigosa
+  "Design: Timeless Forest Emerald",      -- Drak'Tharon Keep (heroic), Tharon'ja
+  "Design: Infused Twilight Opal",        -- Azjol-Nerub (heroic), Anub'arak
+}
 
 local ignore_npc = {
   ["Fizzle \"The Sharpened Scissors\""] = true, -- barber
@@ -163,6 +222,97 @@ local function silence_enabled()
   return not WeirdChromieDB or WeirdChromieDB.silence ~= false
 end
 
+local function auto_pass_enabled()
+  return WeirdChromieDB and WeirdChromieDB.auto_pass_recipes == true
+end
+
+-- RollOnLoot rollType: 0 = pass, 1 = need, 2 = greed, 3 = disenchant.
+-- Need/Greed/DE on a BoP item shows the "Looting this item will bind it to
+-- you" confirmation popup (CONFIRM_LOOT_ROLL event); the roll only commits
+-- after ConfirmLootRoll(rollID, rollType). pending_confirms tracks rolls we
+-- initiated so we don't auto-confirm popups from the player's own need-rolls.
+local roll_labels = { [0] = "passed", [1] = "needed", [2] = "greeded", [3] = "disenchanted" }
+local pending_confirms = {}
+-- When true, RollOnLoot/ConfirmLootRoll are diverted to chat prints so the
+-- decision/confirm flow can be exercised without a live group loot drop.
+-- Toggled by the `/wc testroll` debug command.
+local test_mode = false
+
+local function do_auto_roll(rollID, link, rollType)
+  if rollType == 1 or rollType == 2 or rollType == 3 then
+    pending_confirms[rollID] = rollType
+  end
+  if test_mode then
+    DEFAULT_CHAT_FRAME:AddMessage(
+      "|cff33ff99[WC test]|r would RollOnLoot(" .. tostring(rollID) ..
+      ", " .. tostring(rollType) .. ") [" .. (roll_labels[rollType] or "?") .. "] " .. link)
+    return
+  end
+  RollOnLoot(rollID, rollType)
+  if WeirdChromieDB and WeirdChromieDB.debug then
+    DEFAULT_CHAT_FRAME:AddMessage(
+      "|cff33ff99[WC]|r auto-" .. (roll_labels[rollType] or "rolled") .. " on " .. link)
+  end
+end
+
+-- Deferred-confirm queue: ConfirmLootRoll fired synchronously inside the
+-- event handler can race the popup's own setup, leaving the dialog
+-- on-screen. Stash the (rollID,rollType) and resolve it next OnUpdate tick.
+local confirm_queue = {}
+local confirm_dispatcher = CreateFrame("Frame")
+confirm_dispatcher:Hide()
+confirm_dispatcher:SetScript("OnUpdate", function(self)
+  for rollID, rollType in pairs(confirm_queue) do
+    if test_mode then
+      DEFAULT_CHAT_FRAME:AddMessage(
+        "|cff33ff99[WC test]|r would ConfirmLootRoll(" .. tostring(rollID) ..
+        ", " .. tostring(rollType) .. ") [" .. (roll_labels[rollType] or "?") .. "]")
+    else
+      ConfirmLootRoll(rollID, rollType)
+      StaticPopup_Hide("CONFIRM_LOOT_ROLL", rollID)
+      if WeirdChromieDB and WeirdChromieDB.debug then
+        DEFAULT_CHAT_FRAME:AddMessage(
+          "|cff33ff99[WC]|r confirmed BoP roll " .. tostring(rollID) ..
+          " (" .. (roll_labels[rollType] or tostring(rollType)) .. ")")
+      end
+    end
+    confirm_queue[rollID] = nil
+  end
+  self:Hide()
+end)
+
+local function handle_confirm_loot_roll(rollID, rollType)
+  local pending = pending_confirms[rollID]
+  if not pending then return end
+  pending_confirms[rollID] = nil
+  confirm_queue[rollID] = pending
+  confirm_dispatcher:Show()
+end
+
+local function handle_loot_roll(rollID, link_override)
+  local link = link_override or GetLootRollItemLink(rollID)
+  if not link then return end
+
+  if auto_pass_enabled() then
+    for _, needle in ipairs(auto_pass_items) do
+      if string.find(link, needle, 1, true) then
+        do_auto_roll(rollID, link, 0)
+        return
+      end
+    end
+  end
+
+  local jc_roll = WeirdChromieDB and WeirdChromieDB.jc_design_roll
+  if jc_roll == 0 or jc_roll == 1 or jc_roll == 2 then
+    for _, needle in ipairs(jc_design_drops) do
+      if string.find(link, needle, 1, true) then
+        do_auto_roll(rollID, link, jc_roll)
+        return
+      end
+    end
+  end
+end
+
 local function handle_gossip_show()
   if not gossip_enabled() or IsControlKeyDown() then return end
 
@@ -209,9 +359,22 @@ end
 
 ------------------------------
 
+local function auto_dismount_enabled()
+  return WeirdChromieDB and WeirdChromieDB.auto_dismount == true
+end
+
+local function handle_ui_error(msg)
+  if not auto_dismount_enabled() then return end
+  if msg ~= ERR_ATTACK_MOUNTED then return end
+  if IsMounted() then Dismount() end
+end
+
 local WeirdChromie = CreateFrame("Frame", "WeirdChromie")
 WeirdChromie:RegisterEvent("ADDON_LOADED")
 WeirdChromie:RegisterEvent("GOSSIP_SHOW")
+WeirdChromie:RegisterEvent("START_LOOT_ROLL")
+WeirdChromie:RegisterEvent("CONFIRM_LOOT_ROLL")
+WeirdChromie:RegisterEvent("UI_ERROR_MESSAGE")
 WeirdChromie:SetScript("OnEvent", function(self, event, ...)
   if event == "ADDON_LOADED" then
     local addon = ...
@@ -219,11 +382,23 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       WeirdChromieDB = WeirdChromieDB or {}
       if WeirdChromieDB.drake_enabled == nil then WeirdChromieDB.drake_enabled = true end
       if WeirdChromieDB.drake_locked  == nil then WeirdChromieDB.drake_locked  = false end
+      if WeirdChromieDB.auto_pass_recipes == nil then WeirdChromieDB.auto_pass_recipes = false end
+      if WeirdChromieDB.jc_design_roll == nil then WeirdChromieDB.jc_design_roll = 2 end
+      if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
   elseif event == "GOSSIP_SHOW" then
     handle_gossip_show()
+  elseif event == "START_LOOT_ROLL" then
+    -- START_LOOT_ROLL fires with (rollID, rollTime). Only forward rollID;
+    -- handle_loot_roll's second arg is a test-mode link override.
+    local rollID = ...
+    handle_loot_roll(rollID)
+  elseif event == "CONFIRM_LOOT_ROLL" then
+    handle_confirm_loot_roll(...)
+  elseif event == "UI_ERROR_MESSAGE" then
+    handle_ui_error(...)
   end
 end)
 
@@ -245,15 +420,14 @@ local function system_filter(self, event, msg, ...)
   if not silence_enabled() then return false end
   local lowered = string.lower(strip_colors(msg or ""))
 
-  -- Truncate verbose [SERVER] announces at the first period (keep just the
-  -- headline like "[SERVER] Restart in 11 minute(s)." and drop the rest).
-  -- Color escapes never contain '.', so the first '.' in the raw message
-  -- is always a content period.
-  if string.find(lowered, "[server]", 1, true) == 1 then
-    local pos = string.find(msg, ".", 1, true)
-    if pos then
-      debug_print("[SERVER] truncate", msg)
-      return false, string.sub(msg, 1, pos) .. "|r", ...
+  for _, r in ipairs(system_rewrites) do
+    local pos = string.find(lowered, r.needle, 1, true)
+    if pos and (not r.anchored or pos == 1) then
+      local out = r.replacement or (r.rewrite and r.rewrite(msg))
+      if out then
+        debug_print(r.label, msg)
+        return false, out, ...
+      end
     end
   end
 
@@ -289,9 +463,6 @@ ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_YELL", monster_yell_filter)
 -- reach into the drake-button section defined further down.
 local update_drake_button
 local apply_drake_position
-local options_open = false  -- forces the drake button visible while the
-                            -- options panel is open, so the user can see
-                            -- and reposition it from anywhere.
 
 ------------------------------
 -- Interface Options panel (Esc -> Interface -> AddOns -> WeirdChromie)
@@ -332,18 +503,77 @@ end)
 local cbGossip = make_check(
   "WeirdChromieOptionAutoGossip",
   "Auto-skip gossip dialogues",
-  "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, plus per-NPC scripted skips). Hold Ctrl to bypass for one interaction.",
+  "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, dungeon-progression gossips like Chromie/Arthas in Culling of Stratholme, Oculus drake handlers, Halls of Stone Brann, etc.). Hold Ctrl to bypass for one interaction.",
   cbSilence)
 cbGossip:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
 end)
 
+local cbAutoPass = make_check(
+  "WeirdChromieOptionAutoPass",
+  "Auto-pass on bandage and cooking recipes",
+  "Automatically pass on group loot rolls for Heavy Frostweave Bandage and dungeon cooking recipes.",
+  cbGossip)
+cbAutoPass:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_pass_recipes = self:GetChecked() and true or false
+end)
+
+local cbAutoDismount = make_check(
+  "WeirdChromieOptionAutoDismount",
+  "Auto-dismount flying mounts when attacking",
+  "Automatically dismount from a flying mount when attempting an attack.",
+  cbAutoPass)
+cbAutoDismount:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_dismount = self:GetChecked() and true or false
+end)
+
+-- JC design roll dropdown: Off / Pass / Greed / Need.
+-- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
+local jc_roll_choices = {
+  { text = "Off",   value = false },
+  { text = "Pass",  value = 0 },
+  { text = "Greed", value = 2 },
+  { text = "Need",  value = 1 },
+}
+
+local function jc_roll_label(value)
+  for _, c in ipairs(jc_roll_choices) do
+    if c.value == value then return c.text end
+  end
+  return "Off"
+end
+
+local jcLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+jcLabel:SetPoint("TOPLEFT", cbAutoDismount, "BOTTOMLEFT", 0, -16)
+jcLabel:SetText("Auto-roll on BoP jewelcrafting designs from dungeon bosses:")
+
+local jcDropdown = CreateFrame("Frame", "WeirdChromieOptionJCDropdown", optionsPanel, "UIDropDownMenuTemplate")
+jcDropdown:SetPoint("TOPLEFT", jcLabel, "BOTTOMLEFT", -16, -4)
+UIDropDownMenu_SetWidth(jcDropdown, 100)
+
+UIDropDownMenu_Initialize(jcDropdown, function()
+  for _, c in ipairs(jc_roll_choices) do
+    local info = UIDropDownMenu_CreateInfo()
+    info.text = c.text
+    info.value = c.value
+    info.checked = (WeirdChromieDB and WeirdChromieDB.jc_design_roll == c.value)
+    info.func = function(self)
+      WeirdChromieDB = WeirdChromieDB or {}
+      WeirdChromieDB.jc_design_roll = self.value
+      UIDropDownMenu_SetText(jcDropdown, jc_roll_label(self.value))
+    end
+    UIDropDownMenu_AddButton(info)
+  end
+end)
+
 local cbDrakeEnabled = make_check(
   "WeirdChromieOptionDrakeEnabled",
   "Show Oculus drake essence button",
   "Show the movable drake-essence quick-use button while inside The Oculus and holding any drake essence in your bags.",
-  cbGossip)
+  jcDropdown, 16, -8)
 cbDrakeEnabled:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.drake_enabled = self:GetChecked() and true or false
@@ -389,16 +619,22 @@ optionsPanel:SetScript("OnShow", function()
   WeirdChromieDB = WeirdChromieDB or {}
   cbSilence:SetChecked(WeirdChromieDB.silence ~= false)
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
+  cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
+  cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
+  UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
   cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
   cbDrakeLocked:SetChecked(WeirdChromieDB.drake_locked ~= false)
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
-  options_open = true
   if update_drake_button then update_drake_button() end
 end)
 optionsPanel:SetScript("OnHide", function()
-  options_open = false
   if update_drake_button then update_drake_button() end
 end)
+if InterfaceOptionsFrame then
+  InterfaceOptionsFrame:HookScript("OnHide", function()
+    if update_drake_button then update_drake_button() end
+  end)
+end
 
 InterfaceOptions_AddCategory(optionsPanel)
 
@@ -548,11 +784,12 @@ update_drake_button = function()
     drakeBtn:Hide()
     return
   end
-  if options_open then
+  if InterfaceOptionsFrame and InterfaceOptionsFrame:IsShown()
+     and optionsPanel and optionsPanel:IsShown() then
     drakeBtn:Show()
     return
   end
-  if not inOculus then
+  if GetRealZoneText() ~= DRAKE_ZONE then
     drakeBtn:Hide()
     return
   end
@@ -606,8 +843,65 @@ end)
 
 ------------------------------
 
+-- Synthetic item link wrapper for test rolls. Real links carry the full
+-- |Hitem:id::::::::::|h header; for matching we only need the bracketed
+-- name to appear inside the link string.
+local function fake_item_link(name)
+  return "|cffffffff|Hitem:0::::::::::|h[" .. name .. "]|h|r"
+end
+
+local test_roll_counter = 0
+local function run_test_roll(link)
+  test_mode = true
+  test_roll_counter = test_roll_counter + 1
+  local fake_id = test_roll_counter
+  if WeirdChromieDB and WeirdChromieDB.debug then
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r START_LOOT_ROLL rollID=" .. tostring(fake_id) .. " link=" .. link)
+  end
+  handle_loot_roll(fake_id, link)
+  -- If our decision queued a BoP confirm, exercise that path too.
+  if pending_confirms[fake_id] then
+    handle_confirm_loot_roll(fake_id, pending_confirms[fake_id])
+    -- Force the deferred OnUpdate to run immediately so the print lands
+    -- in the same command output instead of one tick later.
+    local script = confirm_dispatcher:GetScript("OnUpdate")
+    if script then script(confirm_dispatcher) end
+  else
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r no BoP confirm needed (pass or no match)")
+  end
+  test_mode = false
+end
+
+local function run_test_roll_all()
+  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- auto-pass patterns ---")
+  for _, name in ipairs(auto_pass_items) do
+    run_test_roll(fake_item_link(name))
+  end
+  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- jc-design patterns (rolls per current jc_design_roll setting) ---")
+  for _, name in ipairs(jc_design_drops) do
+    run_test_roll(fake_item_link(name))
+  end
+  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- no-match control ---")
+  run_test_roll(fake_item_link("Linen Cloth"))
+end
+
 SLASH_WEIRDCHROMIE1 = "/wc"
 SLASH_WEIRDCHROMIE2 = "/weirdchromie"
-SlashCmdList["WEIRDCHROMIE"] = function()
+SlashCmdList["WEIRDCHROMIE"] = function(msg)
+  msg = msg or ""
+  local cmd, rest = string.match(msg, "^%s*(%S*)%s*(.-)%s*$")
+  cmd = cmd and string.lower(cmd) or ""
+  if cmd == "testroll" then
+    if not (WeirdChromieDB and WeirdChromieDB.debug) then
+      DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r enable Debug capture in /wc first to use testroll")
+      return
+    end
+    if rest == "" then
+      run_test_roll_all()
+    else
+      run_test_roll(rest)
+    end
+    return
+  end
   open_options_panel()
 end

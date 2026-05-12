@@ -5,8 +5,11 @@ ChromieCraft (3.3.5) addon. Quality-of-life patches for the things the server ge
 
 Features
 ---
-* Silences ChromieCraft server spam (queue announcers, leaderboards, tips, server notices, joyous journeys, etc.).
-* Auto-skips routine NPC gossip
+* Silence ChromieCraft server spam (queue announcers, leaderboards, tips, server notices, joyous journeys, etc.).
+* Auto-skip routine NPC gossip.
+* Auto-pass group loot rolls on Heavy Frostweave Bandage and the four Northrend mob-drop cooking recipes.
+* Auto-roll (pass/greed/need) on the BoP jewelcrafting designs from Northrend dungeon bosses.
+* Auto-dismount flying mounts when an attack is blocked by "Can't attack while mounted."
 * Drake essence button (Oculus): movable. Click uses the held essence; if mounted on a drake, click leaves the vehicle instead.
 
 Slash commands
@@ -16,11 +19,7 @@ Slash commands
 
 Options
 ---
-Esc -> Interface -> AddOns -> WeirdChromie:
-* Silence server spam
-* Auto-skip gossip dialogues
-* Show Oculus drake essence button, Lock button position, Reset button position
-* Debug capture (prints silenced messages with the matching pattern)
+Esc -> Interface -> AddOns -> WeirdChromie
 
 ___
 Made by and for `Weird Vibes`.
