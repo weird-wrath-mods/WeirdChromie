@@ -11,6 +11,7 @@ Features
 * Auto-roll (pass/greed/need) on the BoP jewelcrafting designs from Northrend dungeon bosses.
 * Auto-roll (pass/greed/need/disenchant) on uncommon BoE drops, with optional Greed-instead-of-Disenchant for weapons and shields.
 * Auto-dismount flying mounts when an attack is blocked by "Can't attack while mounted."
+* Auto-delete Minigob Manabonk spam mail and destroy the attached Mischief Maker. Skipped when bags are full.
 * Drake essence button (Oculus): movable. Click uses the held essence; if mounted on a drake, click leaves the vehicle instead.
 
 Slash commands

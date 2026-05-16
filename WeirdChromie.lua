@@ -44,6 +44,8 @@ local system_patterns = {
 
   '^Auction deposits are only', -- we need to determine real costs and adjust them
 
+  '^Participants of the event can become revived', -- mass-PvP .fun return blurb
+
   -- Weekly arena-point flush sequence; consolidated to a single
   -- "Arena points updated." headline (rewritten on the final line below).
   '^Flushing Arena points based on team ratings',
@@ -82,8 +84,8 @@ end
 -- Rewrite rules for system messages. Each entry needs a `needle`
 -- (lowercase plain substring used to match), and either:
 --   `replacement`: a fixed string to emit, OR
---   `rewrite(msg)`: a function returning the replacement string (or nil
---                   to leave the message unchanged).
+--   `rewrite(msg)`: a function returning the replacement string, nil to
+--                   leave the message unchanged, or false to silence it.
 -- `anchored = true` requires the needle to match at position 1.
 local system_rewrites = {
   {
@@ -99,6 +101,23 @@ local system_rewrites = {
     label = "[arena points consolidate]",
     needle = "done flushing arena points",
     replacement = "Arena points updated.",
+  },
+  -- Mass-PvP teleport announcer. Fires every minute from ~6 down to 1.
+  -- Compress to a one-liner; only emit at 5-minute intervals and at 1 min,
+  -- silence the others.
+  {
+    label = "[mass-PvP announcer]",
+    needle = "for mass-pvp",
+    rewrite = function(msg)
+      local mins, zone = string.match(msg,
+        "In (%d+) minutes? .- teleported to (.-) for mass%-PvP")
+      if not mins then return nil end
+      local n = tonumber(mins)
+      if n == 1 or (n > 0 and n % 5 == 0) then
+        return "In " .. n .. "min " .. zone .. " mass-PvP begins. Type '.fun on' to join and '.fun return' after the event."
+      end
+      return false
+    end,
   },
 }
 
@@ -127,6 +146,15 @@ local jc_design_drops = {
   "Design: Thick Autumn's Glow",          -- Violet Hold (heroic), Cyanigosa
   "Design: Timeless Forest Emerald",      -- Drak'Tharon Keep (heroic), Tharon'ja
   "Design: Infused Twilight Opal",        -- Azjol-Nerub (heroic), Anub'arak
+}
+
+-- Mailbox auto-delete: senders whose mail should be auto-cleared on
+-- MAIL_INBOX_UPDATE. `name` is exact sender match. `item` is the only
+-- attachment we'll take and destroy; if a mail from this sender carries
+-- anything else, we leave it alone. Text-only mail from the sender is
+-- always deleted. COD mail is always skipped.
+local auto_delete_senders = {
+  { name = "Minigob Manabonk", item = "The Mischief Maker" },
 }
 
 local ignore_npc = {
@@ -303,11 +331,21 @@ end
 
 local function handle_loot_roll(rollID)
   local link = GetLootRollItemLink(rollID)
+  local debug_on = WeirdChromieDB and WeirdChromieDB.debug
+  if debug_on then
+    DEFAULT_CHAT_FRAME:AddMessage(
+      "|cff33ff99[WC dbg]|r START_LOOT_ROLL rollID=" .. tostring(rollID) ..
+      " link=" .. tostring(link) ..
+      " auto_pass=" .. tostring(auto_pass_enabled()))
+  end
   if not link then return end
 
   if auto_pass_enabled() then
     for _, needle in ipairs(auto_pass_items) do
       if string.find(link, needle, 1, true) then
+        if debug_on then
+          DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC dbg]|r matched auto-pass needle: " .. needle)
+        end
         do_auto_roll(rollID, link, 0)
         return
       end
@@ -396,6 +434,169 @@ local function auto_dismount_enabled()
   return WeirdChromieDB and WeirdChromieDB.auto_dismount == true
 end
 
+local function auto_delete_mail_enabled()
+  return not WeirdChromieDB or WeirdChromieDB.auto_delete_mail ~= false
+end
+
+local function sender_entry(sender)
+  if not sender then return nil end
+  for _, e in ipairs(auto_delete_senders) do
+    if sender == e.name then return e end
+  end
+  return nil
+end
+
+-- True if every attachment slot present matches the expected item name.
+-- WotLK attachment slots span 1..ATTACHMENTS_MAX_RECEIVE (16); not contiguous.
+local function attachments_ok(i, expected)
+  for slot = 1, ATTACHMENTS_MAX_RECEIVE do
+    local name = GetInboxItem(i, slot)
+    if name and name ~= expected then return false end
+  end
+  return true
+end
+
+local function find_attachment_slot(i, expected)
+  for slot = ATTACHMENTS_MAX_RECEIVE, 1, -1 do
+    if GetInboxItem(i, slot) == expected then return slot end
+  end
+end
+
+local function has_free_bag_slot()
+  for bag = 0, NUM_BAG_SLOTS do
+    local free, family = GetContainerNumFreeSlots(bag)
+    if family == 0 and free and free > 0 then return true end
+  end
+  return false
+end
+
+local function bag_count_item(name)
+  local total = 0
+  for bag = 0, NUM_BAG_SLOTS do
+    local numSlots = GetContainerNumSlots(bag) or 0
+    for slot = 1, numSlots do
+      local link = GetContainerItemLink(bag, slot)
+      if link and string.find(link, name, 1, true) then
+        local _, c = GetContainerItemInfo(bag, slot)
+        total = total + (c or 1)
+      end
+    end
+  end
+  return total
+end
+
+-- Destroys up to `amount` of `name` from bags. Splits the last partial
+-- stack as needed. DeleteCursorItem on common-quality items is silent;
+-- uncommon+ would trigger a confirmation popup we'd need to handle.
+local function destroy_from_bags(name, amount)
+  for bag = 0, NUM_BAG_SLOTS do
+    local numSlots = GetContainerNumSlots(bag) or 0
+    for slot = 1, numSlots do
+      if amount <= 0 then return end
+      local link = GetContainerItemLink(bag, slot)
+      if link and string.find(link, name, 1, true) then
+        local _, c = GetContainerItemInfo(bag, slot)
+        c = c or 1
+        ClearCursor()
+        if c <= amount then
+          PickupContainerItem(bag, slot)
+          DeleteCursorItem()
+          amount = amount - c
+        else
+          SplitContainerItem(bag, slot, amount)
+          DeleteCursorItem()
+          return
+        end
+      end
+    end
+  end
+end
+
+-- pending_destroy is set after TakeInboxItem so the next tick can verify
+-- the item actually landed in the bag (the take is async) and then destroy
+-- exactly the delivered quantity. Bails after ~3s if the item never shows.
+local pending_destroy = nil
+
+local function process_one_spam_mail()
+  if pending_destroy then
+    local now = bag_count_item(pending_destroy.item)
+    local delta = now - pending_destroy.before
+    if delta >= pending_destroy.added then
+      destroy_from_bags(pending_destroy.item, pending_destroy.added)
+      DEFAULT_CHAT_FRAME:AddMessage(
+        "|cff33ff99[WC]|r destroyed " .. pending_destroy.added .. "x " .. pending_destroy.item)
+      pending_destroy = nil
+      return true
+    end
+    pending_destroy.waited = pending_destroy.waited + 1
+    if pending_destroy.waited > 8 then
+      pending_destroy = nil
+    end
+    return true
+  end
+
+  local count = GetInboxNumItems and GetInboxNumItems() or 0
+  if count == 0 then return false end
+
+  for i = count, 1, -1 do
+    local _, _, sender, subject, money, codAmount = GetInboxHeaderInfo(i)
+    local entry = sender_entry(sender)
+    if entry and not (codAmount and codAmount > 0)
+       and attachments_ok(i, entry.item) then
+      local slot = find_attachment_slot(i, entry.item)
+      if slot and has_free_bag_slot() then
+        local _, _, attachCount = GetInboxItem(i, slot)
+        pending_destroy = {
+          item    = entry.item,
+          before  = bag_count_item(entry.item),
+          added   = attachCount or 1,
+          waited  = 0,
+        }
+        TakeInboxItem(i, slot)
+        return true
+      end
+      if money and money > 0 then
+        TakeInboxMoney(i)
+        return true
+      end
+      if not InboxItemCanDelete or InboxItemCanDelete(i) then
+        DeleteInboxItem(i)
+        DEFAULT_CHAT_FRAME:AddMessage(
+          "|cff33ff99[WC]|r auto-deleted mail from " .. sender ..
+          " (" .. tostring(subject) .. ")")
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local mail_ticker = CreateFrame("Frame")
+mail_ticker:Hide()
+mail_ticker.elapsed = 0
+mail_ticker.idle = 0
+mail_ticker:SetScript("OnUpdate", function(self, elapsed)
+  self.elapsed = self.elapsed + elapsed
+  if self.elapsed < 0.35 then return end
+  self.elapsed = 0
+  if process_one_spam_mail() then
+    self.idle = 0
+  else
+    self.idle = self.idle + 1
+    if self.idle > 4 then
+      self:Hide()
+      self.idle = 0
+    end
+  end
+end)
+
+local function handle_mail_inbox_update()
+  if not auto_delete_mail_enabled() then return end
+  mail_ticker.elapsed = 0
+  mail_ticker.idle = 0
+  mail_ticker:Show()
+end
+
 local function handle_ui_error(msg)
   if not auto_dismount_enabled() then return end
   if msg ~= ERR_ATTACK_MOUNTED then return end
@@ -409,6 +610,7 @@ WeirdChromie:RegisterEvent("PLAYER_ENTERING_WORLD")
 WeirdChromie:RegisterEvent("START_LOOT_ROLL")
 WeirdChromie:RegisterEvent("CONFIRM_LOOT_ROLL")
 WeirdChromie:RegisterEvent("UI_ERROR_MESSAGE")
+WeirdChromie:RegisterEvent("MAIL_INBOX_UPDATE")
 WeirdChromie:SetScript("OnEvent", function(self, event, ...)
   if event == "ADDON_LOADED" then
     local addon = ...
@@ -421,6 +623,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.boe_green_roll == nil then WeirdChromieDB.boe_green_roll = false end
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
+      if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
@@ -445,6 +648,8 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
     handle_confirm_loot_roll(...)
   elseif event == "UI_ERROR_MESSAGE" then
     handle_ui_error(...)
+  elseif event == "MAIL_INBOX_UPDATE" then
+    handle_mail_inbox_update()
   end
 end)
 
@@ -469,8 +674,16 @@ local function system_filter(self, event, msg, ...)
   for _, r in ipairs(system_rewrites) do
     local pos = string.find(lowered, r.needle, 1, true)
     if pos and (not r.anchored or pos == 1) then
-      local out = r.replacement or (r.rewrite and r.rewrite(msg))
-      if out then
+      local out
+      if r.replacement then
+        out = r.replacement
+      elseif r.rewrite then
+        out = r.rewrite(msg)
+      end
+      if out == false then
+        debug_print(r.label, msg)
+        return true
+      elseif out then
         debug_print(r.label, msg)
         return false, out, ...
       end
@@ -551,6 +764,8 @@ local cbGossip = make_check(
   "Auto-skip gossip dialogues",
   "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, dungeon-progression gossips like Chromie/Arthas in Culling of Stratholme, Oculus drake handlers, Halls of Stone Brann, etc.). Hold Ctrl to bypass for one interaction.",
   cbSilence)
+cbGossip:ClearAllPoints()
+cbGossip:SetPoint("TOPLEFT", cbSilence, "TOPLEFT", 360, 0)
 cbGossip:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
@@ -560,7 +775,7 @@ local cbAutoPass = make_check(
   "WeirdChromieOptionAutoPass",
   "Auto-pass on bandage and cooking recipes",
   "Automatically pass on group loot rolls for Heavy Frostweave Bandage and dungeon cooking recipes.",
-  cbGossip)
+  cbSilence)
 cbAutoPass:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_pass_recipes = self:GetChecked() and true or false
@@ -574,6 +789,18 @@ local cbAutoDismount = make_check(
 cbAutoDismount:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_dismount = self:GetChecked() and true or false
+end)
+
+local cbAutoDeleteMail = make_check(
+  "WeirdChromieOptionAutoDeleteMail",
+  "Auto-delete Manabonks",
+  "Automatically take and destroy The Mischief Maker from Minigob Manabonk mail, then delete the mail.",
+  cbSilence)
+cbAutoDeleteMail:ClearAllPoints()
+cbAutoDeleteMail:SetPoint("TOPLEFT", cbSilence, "TOPLEFT", 180, 0)
+cbAutoDeleteMail:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_delete_mail = self:GetChecked() and true or false
 end)
 
 -- JC design roll dropdown: Off / Pass / Greed / Need.
@@ -719,6 +946,7 @@ optionsPanel:SetScript("OnShow", function()
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
   cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
   cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
+  cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
   UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
   UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))
   cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
