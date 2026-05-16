@@ -9,6 +9,7 @@ Features
 * Auto-skip routine NPC gossip.
 * Auto-pass group loot rolls on Heavy Frostweave Bandage and the four Northrend mob-drop cooking recipes.
 * Auto-roll (pass/greed/need) on the BoP jewelcrafting designs from Northrend dungeon bosses.
+* Auto-roll (pass/greed/need/disenchant) on uncommon BoE drops, with optional Greed-instead-of-Disenchant for weapons and shields.
 * Auto-dismount flying mounts when an attack is blocked by "Can't attack while mounted."
 * Drake essence button (Oculus): movable. Click uses the held essence; if mounted on a drake, click leaves the vehicle instead.
 

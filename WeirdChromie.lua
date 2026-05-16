@@ -231,24 +231,42 @@ end
 -- you" confirmation popup (CONFIRM_LOOT_ROLL event); the roll only commits
 -- after ConfirmLootRoll(rollID, rollType). pending_confirms tracks rolls we
 -- initiated so we don't auto-confirm popups from the player's own need-rolls.
+-- RollOnLoot rollType: 0 = pass, 1 = need, 2 = greed, 3 = disenchant.
+-- Need/Greed/DE on a BoP item shows the "Looting this item will bind it to
+-- you" confirmation popup (CONFIRM_LOOT_ROLL event); the roll only commits
+-- after ConfirmLootRoll(rollID, rollType). pending_confirms tracks rolls we
+-- initiated so we don't auto-confirm popups from the player's own need-rolls.
 local roll_labels = { [0] = "passed", [1] = "needed", [2] = "greeded", [3] = "disenchanted" }
 local pending_confirms = {}
--- When true, RollOnLoot/ConfirmLootRoll are diverted to chat prints so the
--- decision/confirm flow can be exercised without a live group loot drop.
--- Toggled by the `/wc testroll` debug command.
-local test_mode = false
+
+-- ElvUI's Misc:LootRoll module replaces Blizzard's group-loot UI and relies
+-- on CANCEL_LOOT_ROLL to release its frames. RollOnLoot called from Lua
+-- doesn't fire that event (the default frame hides via its own button OnClick
+-- handler, not via the event), so we call ElvUI's ReleaseFrame directly.
+-- The START_LOOT_ROLL listener is re-registered on PLAYER_ENTERING_WORLD so
+-- our dispatch runs after ElvUI's (which registers on PLAYER_LOGIN), meaning
+-- the frame already exists in M.RollBars when we look it up.
+local function release_elvui_roll_frame(rollID)
+  local ElvUI = _G.ElvUI
+  if not ElvUI then return end
+  local E = ElvUI[1]
+  if not (E and E.GetModule) then return end
+  local M = E:GetModule("Misc", true)
+  if not (M and M.RollBars and M.ReleaseFrame) then return end
+  for _, frame in ipairs(M.RollBars) do
+    if frame.rollID == rollID then
+      M:ReleaseFrame(frame)
+      return
+    end
+  end
+end
 
 local function do_auto_roll(rollID, link, rollType)
   if rollType == 1 or rollType == 2 or rollType == 3 then
     pending_confirms[rollID] = rollType
   end
-  if test_mode then
-    DEFAULT_CHAT_FRAME:AddMessage(
-      "|cff33ff99[WC test]|r would RollOnLoot(" .. tostring(rollID) ..
-      ", " .. tostring(rollType) .. ") [" .. (roll_labels[rollType] or "?") .. "] " .. link)
-    return
-  end
   RollOnLoot(rollID, rollType)
+  release_elvui_roll_frame(rollID)
   if WeirdChromieDB and WeirdChromieDB.debug then
     DEFAULT_CHAT_FRAME:AddMessage(
       "|cff33ff99[WC]|r auto-" .. (roll_labels[rollType] or "rolled") .. " on " .. link)
@@ -263,18 +281,12 @@ local confirm_dispatcher = CreateFrame("Frame")
 confirm_dispatcher:Hide()
 confirm_dispatcher:SetScript("OnUpdate", function(self)
   for rollID, rollType in pairs(confirm_queue) do
-    if test_mode then
+    ConfirmLootRoll(rollID, rollType)
+    StaticPopup_Hide("CONFIRM_LOOT_ROLL", rollID)
+    if WeirdChromieDB and WeirdChromieDB.debug then
       DEFAULT_CHAT_FRAME:AddMessage(
-        "|cff33ff99[WC test]|r would ConfirmLootRoll(" .. tostring(rollID) ..
-        ", " .. tostring(rollType) .. ") [" .. (roll_labels[rollType] or "?") .. "]")
-    else
-      ConfirmLootRoll(rollID, rollType)
-      StaticPopup_Hide("CONFIRM_LOOT_ROLL", rollID)
-      if WeirdChromieDB and WeirdChromieDB.debug then
-        DEFAULT_CHAT_FRAME:AddMessage(
-          "|cff33ff99[WC]|r confirmed BoP roll " .. tostring(rollID) ..
-          " (" .. (roll_labels[rollType] or tostring(rollType)) .. ")")
-      end
+        "|cff33ff99[WC]|r confirmed BoP roll " .. tostring(rollID) ..
+        " (" .. (roll_labels[rollType] or tostring(rollType)) .. ")")
     end
     confirm_queue[rollID] = nil
   end
@@ -289,8 +301,8 @@ local function handle_confirm_loot_roll(rollID, rollType)
   confirm_dispatcher:Show()
 end
 
-local function handle_loot_roll(rollID, link_override)
-  local link = link_override or GetLootRollItemLink(rollID)
+local function handle_loot_roll(rollID)
+  local link = GetLootRollItemLink(rollID)
   if not link then return end
 
   if auto_pass_enabled() then
@@ -302,7 +314,8 @@ local function handle_loot_roll(rollID, link_override)
     end
   end
 
-  local jc_roll = WeirdChromieDB and WeirdChromieDB.jc_design_roll
+  local db = WeirdChromieDB
+  local jc_roll = db and db.jc_design_roll
   if jc_roll == 0 or jc_roll == 1 or jc_roll == 2 then
     for _, needle in ipairs(jc_design_drops) do
       if string.find(link, needle, 1, true) then
@@ -310,6 +323,26 @@ local function handle_loot_roll(rollID, link_override)
         return
       end
     end
+  end
+
+  -- BoE green handling. GetLootRollItemInfo returns:
+  -- texture, name, count, quality, bindOnPickUp, canNeed, canGreed, canDisenchant.
+  if not db then return end
+  local _, _, _, quality, bindOnPickUp, _, _, canDisenchant = GetLootRollItemInfo(rollID)
+  if quality ~= 2 or bindOnPickUp then return end
+
+  local boe = db.boe_green_roll
+  if boe == 0 or boe == 1 or boe == 2 or boe == 3 then
+    local rollType = boe
+    if rollType == 3 then
+      if not canDisenchant then
+        rollType = 2
+      elseif db.boe_skip_de_weapons then
+        local _, _, _, _, _, itemType, itemSubType = GetItemInfo(link)
+        if itemType == "Weapon" or itemSubType == "Shields" then rollType = 2 end
+      end
+    end
+    do_auto_roll(rollID, link, rollType)
   end
 end
 
@@ -372,6 +405,7 @@ end
 local WeirdChromie = CreateFrame("Frame", "WeirdChromie")
 WeirdChromie:RegisterEvent("ADDON_LOADED")
 WeirdChromie:RegisterEvent("GOSSIP_SHOW")
+WeirdChromie:RegisterEvent("PLAYER_ENTERING_WORLD")
 WeirdChromie:RegisterEvent("START_LOOT_ROLL")
 WeirdChromie:RegisterEvent("CONFIRM_LOOT_ROLL")
 WeirdChromie:RegisterEvent("UI_ERROR_MESSAGE")
@@ -383,16 +417,28 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.drake_enabled == nil then WeirdChromieDB.drake_enabled = true end
       if WeirdChromieDB.drake_locked  == nil then WeirdChromieDB.drake_locked  = false end
       if WeirdChromieDB.auto_pass_recipes == nil then WeirdChromieDB.auto_pass_recipes = false end
-      if WeirdChromieDB.jc_design_roll == nil then WeirdChromieDB.jc_design_roll = 2 end
+      if WeirdChromieDB.jc_design_roll == nil then WeirdChromieDB.jc_design_roll = false end
+      if WeirdChromieDB.boe_green_roll == nil then WeirdChromieDB.boe_green_roll = false end
+      if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    -- ElvUI's LootRoll module registers its START_LOOT_ROLL handler during
+    -- PLAYER_LOGIN (Misc.lua initialize callback). We register at file-load
+    -- time so ours runs first by default, which means we'd call
+    -- release_elvui_roll_frame before ElvUI has created the frame. By
+    -- unregistering and re-registering on PLAYER_ENTERING_WORLD (which fires
+    -- after PLAYER_LOGIN), we get pushed to the end of the dispatch list and
+    -- run after ElvUI. Same-tick: ElvUI creates the frame, we release it,
+    -- renderer paints once -> no visible flash.
+    self:UnregisterEvent("START_LOOT_ROLL")
+    self:RegisterEvent("START_LOOT_ROLL")
   elseif event == "GOSSIP_SHOW" then
     handle_gossip_show()
   elseif event == "START_LOOT_ROLL" then
-    -- START_LOOT_ROLL fires with (rollID, rollTime). Only forward rollID;
-    -- handle_loot_roll's second arg is a test-mode link override.
+    -- START_LOOT_ROLL fires with (rollID, rollTime). Only forward rollID.
     local rollID = ...
     handle_loot_roll(rollID)
   elseif event == "CONFIRM_LOOT_ROLL" then
@@ -548,7 +594,8 @@ end
 
 local jcLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
 jcLabel:SetPoint("TOPLEFT", cbAutoDismount, "BOTTOMLEFT", 0, -16)
-jcLabel:SetText("Auto-roll on BoP jewelcrafting designs from dungeon bosses:")
+jcLabel:SetText("JC Recipes")
+jcLabel.tooltipText = "Auto-roll on the BoP jewelcrafting designs that drop from Northrend dungeon bosses."
 
 local jcDropdown = CreateFrame("Frame", "WeirdChromieOptionJCDropdown", optionsPanel, "UIDropDownMenuTemplate")
 jcDropdown:SetPoint("TOPLEFT", jcLabel, "BOTTOMLEFT", -16, -4)
@@ -569,11 +616,62 @@ UIDropDownMenu_Initialize(jcDropdown, function()
   end
 end)
 
+-- BoE green dropdown: Off / Pass / Greed / Need / DE.
+-- Stored value: false (off), 0 (pass), 1 (need), 2 (greed), 3 (disenchant).
+local boe_roll_choices = {
+  { text = "Off",   value = false },
+  { text = "Pass",  value = 0 },
+  { text = "Greed", value = 2 },
+  { text = "Need",  value = 1 },
+  { text = "Disenchant", value = 3 },
+}
+
+local function boe_roll_label(value)
+  for _, c in ipairs(boe_roll_choices) do
+    if c.value == value then return c.text end
+  end
+  return "Off"
+end
+
+local boeLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+boeLabel:SetPoint("TOPLEFT", jcLabel, "TOPLEFT", 140, 0)
+boeLabel:SetText("BoE Greens")
+boeLabel.tooltipText = "Auto-roll on uncommon (green) BoE drops."
+
+local boeDropdown = CreateFrame("Frame", "WeirdChromieOptionBoEDropdown", optionsPanel, "UIDropDownMenuTemplate")
+boeDropdown:SetPoint("TOPLEFT", boeLabel, "BOTTOMLEFT", -16, -4)
+UIDropDownMenu_SetWidth(boeDropdown, 120)
+
+UIDropDownMenu_Initialize(boeDropdown, function()
+  for _, c in ipairs(boe_roll_choices) do
+    local info = UIDropDownMenu_CreateInfo()
+    info.text = c.text
+    info.value = c.value
+    info.checked = (WeirdChromieDB and WeirdChromieDB.boe_green_roll == c.value)
+    info.func = function(self)
+      WeirdChromieDB = WeirdChromieDB or {}
+      WeirdChromieDB.boe_green_roll = self.value
+      UIDropDownMenu_SetText(boeDropdown, boe_roll_label(self.value))
+    end
+    UIDropDownMenu_AddButton(info)
+  end
+end)
+
+local cbBoeSkipDeWeapons = make_check(
+  "WeirdChromieOptionBoeSkipDeWeapons",
+  "Do not DE weapons/shields",
+  "When the BoE roll is Disenchant, roll Greed on weapons and shields instead.",
+  boeDropdown, 16, -4)
+cbBoeSkipDeWeapons:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.boe_skip_de_weapons = self:GetChecked() and true or false
+end)
+
 local cbDrakeEnabled = make_check(
   "WeirdChromieOptionDrakeEnabled",
   "Show Oculus drake essence button",
   "Show the movable drake-essence quick-use button while inside The Oculus and holding any drake essence in your bags.",
-  jcDropdown, 16, -8)
+  jcDropdown, 16, -32)
 cbDrakeEnabled:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.drake_enabled = self:GetChecked() and true or false
@@ -622,6 +720,8 @@ optionsPanel:SetScript("OnShow", function()
   cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
   cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
   UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
+  UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))
+  cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
   cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
   cbDrakeLocked:SetChecked(WeirdChromieDB.drake_locked ~= false)
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
@@ -842,66 +942,77 @@ drakeEvents:SetScript("OnEvent", function(self, event)
 end)
 
 ------------------------------
+-- LFG cooldown-frame refresh fix
+------------------------------
+-- LFDQueueFrameRandomCooldownFrame_Update reads each party member's status
+-- from UnitHasLFGDeserter / UnitHasLFGRandomCooldown (hidden aura checks).
+-- Blizzard only re-runs that update on UNIT_AURA / PLAYER_ENTERING_WORLD /
+-- PARTY_MEMBERS_CHANGED, so if the aura table for a freshly-joined member
+-- hasn't synced when the LFG frame opens, that member shows as READY and
+-- nothing ever corrects it. Add the LFG_* events Blizzard left off, plus
+-- an OnShow re-request and a slow ticker while the frame is visible.
 
--- Synthetic item link wrapper for test rolls. Real links carry the full
--- |Hitem:id::::::::::|h header; for matching we only need the bracketed
--- name to appear inside the link string.
-local function fake_item_link(name)
-  return "|cffffffff|Hitem:0::::::::::|h[" .. name .. "]|h|r"
-end
+local lfgFix = CreateFrame("Frame", "WeirdChromieLFGCooldownFix")
+lfgFix:RegisterEvent("PLAYER_LOGIN")
+lfgFix:SetScript("OnEvent", function(self)
+  self:UnregisterEvent("PLAYER_LOGIN")
 
-local test_roll_counter = 0
-local function run_test_roll(link)
-  test_mode = true
-  test_roll_counter = test_roll_counter + 1
-  local fake_id = test_roll_counter
-  if WeirdChromieDB and WeirdChromieDB.debug then
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r START_LOOT_ROLL rollID=" .. tostring(fake_id) .. " link=" .. link)
-  end
-  handle_loot_roll(fake_id, link)
-  -- If our decision queued a BoP confirm, exercise that path too.
-  if pending_confirms[fake_id] then
-    handle_confirm_loot_roll(fake_id, pending_confirms[fake_id])
-    -- Force the deferred OnUpdate to run immediately so the print lands
-    -- in the same command output instead of one tick later.
-    local script = confirm_dispatcher:GetScript("OnUpdate")
-    if script then script(confirm_dispatcher) end
-  else
-    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r no BoP confirm needed (pass or no match)")
-  end
-  test_mode = false
-end
+  local cd = _G.LFDQueueFrameCooldownFrame
+  local update = _G.LFDQueueFrameRandomCooldownFrame_Update
+  if not (cd and update) then return end
 
-local function run_test_roll_all()
-  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- auto-pass patterns ---")
-  for _, name in ipairs(auto_pass_items) do
-    run_test_roll(fake_item_link(name))
+  cd:RegisterEvent("LFG_LOCK_INFO_RECEIVED")
+  cd:RegisterEvent("LFG_UPDATE_RANDOM_INFO")
+  cd:RegisterEvent("LFG_UPDATE")
+  cd:HookScript("OnEvent", function(self, event)
+    if event == "LFG_LOCK_INFO_RECEIVED"
+       or event == "LFG_UPDATE_RANDOM_INFO"
+       or event == "LFG_UPDATE" then
+      update()
+    end
+  end)
+
+  local random = _G.LFDQueueFrameRandom
+  if random then
+    random:HookScript("OnShow", function()
+      if RequestLFDPartyLockInfo then RequestLFDPartyLockInfo() end
+      update()
+    end)
   end
-  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- jc-design patterns (rolls per current jc_design_roll setting) ---")
-  for _, name in ipairs(jc_design_drops) do
-    run_test_roll(fake_item_link(name))
+
+  local parent = _G.LFDParentFrame
+  if parent then
+    parent:HookScript("OnShow", function()
+      if RequestLFDPartyLockInfo then RequestLFDPartyLockInfo() end
+      update()
+    end)
   end
-  DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC test]|r --- no-match control ---")
-  run_test_roll(fake_item_link("Linen Cloth"))
-end
+
+  -- Slow heartbeat while the LFG window is up. UNIT_AURA-driven refresh is
+  -- the primary path; this is a 5s fallback for the case where the aura
+  -- arrives without firing UNIT_AURA for the unit we care about. Lives on
+  -- its own frame because LFDQueueFrameRandomCooldownFrame_Update clears
+  -- the cooldown frame's OnUpdate when the player is off cooldown.
+  local heartbeat = CreateFrame("Frame")
+  heartbeat:Hide()
+  local elapsedAcc = 0
+  heartbeat:SetScript("OnUpdate", function(self, elapsed)
+    elapsedAcc = elapsedAcc + (elapsed or 0)
+    if elapsedAcc >= 5 then
+      elapsedAcc = 0
+      update()
+    end
+  end)
+  if parent then
+    parent:HookScript("OnShow", function() elapsedAcc = 0; heartbeat:Show() end)
+    parent:HookScript("OnHide", function() heartbeat:Hide() end)
+  end
+end)
+
+------------------------------
 
 SLASH_WEIRDCHROMIE1 = "/wc"
 SLASH_WEIRDCHROMIE2 = "/weirdchromie"
-SlashCmdList["WEIRDCHROMIE"] = function(msg)
-  msg = msg or ""
-  local cmd, rest = string.match(msg, "^%s*(%S*)%s*(.-)%s*$")
-  cmd = cmd and string.lower(cmd) or ""
-  if cmd == "testroll" then
-    if not (WeirdChromieDB and WeirdChromieDB.debug) then
-      DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[WC]|r enable Debug capture in /wc first to use testroll")
-      return
-    end
-    if rest == "" then
-      run_test_roll_all()
-    else
-      run_test_roll(rest)
-    end
-    return
-  end
+SlashCmdList["WEIRDCHROMIE"] = function()
   open_options_panel()
 end
