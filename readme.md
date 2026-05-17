@@ -13,6 +13,8 @@ Features
 * Auto-dismount flying mounts when an attack is blocked by "Can't attack while mounted."
 * Auto-delete Minigob Manabonk spam mail and destroy the attached Mischief Maker. Skipped when bags are full.
 * Drake essence button (Oculus): movable. Click uses the held essence; if mounted on a drake, click leaves the vehicle instead.
+* Self-cast Revivify and Life Burst on the Wyrmrest Skytalon (Eye of Eternity P3).
+* Fix RDF cooldown frame showing stale party-member status when the dungeon finder opens before deserter/cooldown auras have synced.
 
 Slash commands
 ---

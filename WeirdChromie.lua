@@ -624,6 +624,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
       if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
+      if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
@@ -722,6 +723,8 @@ ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_YELL", monster_yell_filter)
 -- reach into the drake-button section defined further down.
 local update_drake_button
 local apply_drake_position
+local apply_skytalon_override
+local clear_skytalon_override
 
 ------------------------------
 -- Interface Options panel (Esc -> Interface -> AddOns -> WeirdChromie)
@@ -930,11 +933,26 @@ btnDrakeReset:SetScript("OnClick", function()
   if apply_drake_position then apply_drake_position() end
 end)
 
+local cbSkytalon = make_check(
+  "WeirdChromieOptionSkytalon",
+  "Self-cast Skytalon heals",
+  "Eye of Eternity Phase 3, override Revivify and Life Burst to cast on yourself if you have no target or the target is hostile.",
+  cbDrakeEnabled)
+cbSkytalon:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.skytalon_selfcast = self:GetChecked() and true or false
+  if WeirdChromieDB.skytalon_selfcast then
+    if apply_skytalon_override then apply_skytalon_override() end
+  else
+    if clear_skytalon_override then clear_skytalon_override() end
+  end
+end)
+
 local cbDebug = make_check(
   "WeirdChromieOptionDebug",
   "Debug capture (print silenced messages)",
   "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
-  cbDrakeEnabled)
+  cbSkytalon)
 cbDebug:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.debug = self:GetChecked() and true or false
@@ -952,6 +970,7 @@ optionsPanel:SetScript("OnShow", function()
   cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
   cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
   cbDrakeLocked:SetChecked(WeirdChromieDB.drake_locked ~= false)
+  cbSkytalon:SetChecked(WeirdChromieDB.skytalon_selfcast == true)
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
   if update_drake_button then update_drake_button() end
 end)
@@ -1166,6 +1185,123 @@ drakeEvents:SetScript("OnEvent", function(self, event)
       sync_drake_size()
     end
     check_zone()
+  end
+end)
+
+------------------------------
+-- Eye of Eternity: Wyrmrest Skytalon friendly-target self-cast
+------------------------------
+-- Revivify (slot 3) and Life Burst (slot 4) on the Skytalon vehicle bar
+-- want a friendly target. We override the keys bound to those action
+-- slots while inside Eye of Eternity. Each override fires a macrotext
+-- that casts the spell on the player when in the vehicle UI, and falls
+-- through to clicking the underlying action button otherwise, so P1/P2
+-- on the ground still behaves identically.
+--
+-- SetOverrideBindingClick is combat-locked, so we install at zone-entry
+-- (PLAYER_ENTERING_WORLD into EoE happens out of combat) rather than on
+-- UNIT_ENTERED_VEHICLE (which would fire mid-P3-combat and silently
+-- fail). PLAYER_REGEN_ENABLED reconciles the rare /reload-in-combat case.
+
+local SKYTALON_ZONE = "The Eye of Eternity"
+local SKYTALON_SELFCAST = {
+  { spell = "Revivify",   slot = 3 },
+  { spell = "Life Burst", slot = 4 },
+}
+
+-- Each button uses a secure state driver to swap modes:
+--   in vehicle UI: type=macro, macrotext casts the spell on @player.
+--   out of vehicle: type=action, action=N, fires the player's action slot N
+--     directly via the secure action handler. Independent of which action-
+--     bar mod owns the visible button — /click ActionButtonN silently fails
+--     under ElvUI/etc. because the Blizzard frame is hidden, but invoking
+--     the action slot via the secure handler does not.
+local skytalon_buttons = {}
+for i, entry in ipairs(SKYTALON_SELFCAST) do
+  local btn = CreateFrame("Button", "WeirdChromieSkytalon" .. i,
+    UIParent, "SecureActionButtonTemplate,SecureHandlerStateTemplate")
+  btn:Hide()
+  btn:SetAttribute("type", "action")
+  btn:SetAttribute("action", entry.slot)
+  btn:SetAttribute("_onstate-veh", string.format([[
+    self:SetAttribute("last-state", newstate)
+    if newstate == "in" then
+      self:SetAttribute("type", "macro")
+      self:SetAttribute("macrotext", "/target [noexists][harm] vehicle\n/cast %s")
+    else
+      self:SetAttribute("type", "action")
+      self:SetAttribute("action", %d)
+    end
+  ]], entry.spell, entry.slot))
+  skytalon_buttons[i] = btn
+end
+
+local skytalon_override_active = false
+
+local function skytalon_should_install()
+  return WeirdChromieDB and WeirdChromieDB.skytalon_selfcast
+     and GetRealZoneText() == SKYTALON_ZONE
+end
+
+apply_skytalon_override = function()
+  if skytalon_override_active then return end
+  if InCombatLockdown() then return end
+  if not skytalon_should_install() then return end
+  local verbose = WeirdChromieDB and WeirdChromieDB.debug
+  for i, entry in ipairs(SKYTALON_SELFCAST) do
+    local btn = skytalon_buttons[i]
+    RegisterStateDriver(btn, "veh", "[vehicleui][bonusbar:5] in; out")
+    -- State driver only fires the snippet on state changes; set the
+    -- current mode manually so toggling on while already mounted works.
+    if UnitInVehicle and UnitInVehicle("player") then
+      btn:SetAttribute("type", "macro")
+      btn:SetAttribute("macrotext",
+        "/target [noexists][harm] vehicle\n/cast " .. entry.spell)
+      btn:SetAttribute("last-state", "in")
+    else
+      btn:SetAttribute("type", "action")
+      btn:SetAttribute("action", entry.slot)
+      btn:SetAttribute("last-state", "out")
+    end
+    local k1, k2 = GetBindingKey("ACTIONBUTTON" .. entry.slot)
+    if k1 then
+      SetOverrideBindingClick(btn, true, k1, btn:GetName(), "LeftButton")
+    end
+    if k2 then
+      SetOverrideBindingClick(btn, true, k2, btn:GetName(), "LeftButton")
+    end
+    if verbose then
+      DEFAULT_CHAT_FRAME:AddMessage(
+        "|cff33ff99[WC]|r Skytalon " .. entry.spell ..
+        ": ACTIONBUTTON" .. entry.slot .. " bound to '" ..
+        tostring(k1 or "<none>") .. "'" ..
+        (k2 and ("/'" .. k2 .. "'") or "") ..
+        " -> " .. btn:GetName())
+    end
+  end
+  skytalon_override_active = true
+end
+
+clear_skytalon_override = function()
+  if InCombatLockdown() then return end
+  for _, btn in ipairs(skytalon_buttons) do
+    ClearOverrideBindings(btn)
+    UnregisterStateDriver(btn, "veh")
+    btn:SetAttribute("type", "action")
+    btn:SetAttribute("last-state", nil)
+  end
+  skytalon_override_active = false
+end
+
+local skytalonEvents = CreateFrame("Frame")
+skytalonEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+skytalonEvents:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+skytalonEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+skytalonEvents:SetScript("OnEvent", function()
+  if skytalon_should_install() then
+    apply_skytalon_override()
+  else
+    clear_skytalon_override()
   end
 end)
 
