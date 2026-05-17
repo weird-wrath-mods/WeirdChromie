@@ -164,6 +164,10 @@ local ignore_npc = {
   ["Fara Boltbreaker"] = true, -- gadgetzan times
 }
 
+local gossip_ignore_npc = {
+  ["Warpweaver"] = true, -- causes auto-gossip loop/erratic behaviour
+}
+
 ------------------------------
 -- Gossip skip (ported from LazyWeirdo)
 ------------------------------
@@ -386,6 +390,9 @@ end
 
 local function handle_gossip_show()
   if not gossip_enabled() or IsControlKeyDown() then return end
+
+  -- Never auto-gossip blacklisted NPCs
+  if gossip_ignore_npc[UnitName("npc")] then return end
 
   -- If quests are involved, leave it to the player
   if GetGossipAvailableQuests() or GetGossipActiveQuests() then return end
