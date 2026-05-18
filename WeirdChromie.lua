@@ -240,6 +240,10 @@ local gossip_skip_by_npc = {
     moving     = "^There will be plenty of time for this later Brann",
     open_it    = "^We're with you Brann",
   },
+  -- Icecrown: free Saronite Mine Slaves.
+  ["Saronite Mine Slave"] = {
+    free = "^Go on, you're free",
+  },
 }
 
 local function gossip_enabled()
