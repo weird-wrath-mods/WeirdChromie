@@ -527,8 +527,6 @@ local function process_one_spam_mail()
     local delta = now - pending_destroy.before
     if delta >= pending_destroy.added then
       destroy_from_bags(pending_destroy.item, pending_destroy.added)
-      DEFAULT_CHAT_FRAME:AddMessage(
-        "|cff33ff99[WC]|r destroyed " .. pending_destroy.added .. "x " .. pending_destroy.item)
       pending_destroy = nil
       return true
     end
@@ -565,9 +563,6 @@ local function process_one_spam_mail()
       end
       if not InboxItemCanDelete or InboxItemCanDelete(i) then
         DeleteInboxItem(i)
-        DEFAULT_CHAT_FRAME:AddMessage(
-          "|cff33ff99[WC]|r auto-deleted mail from " .. sender ..
-          " (" .. tostring(subject) .. ")")
         return true
       end
     end
