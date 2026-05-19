@@ -10,6 +10,7 @@ local system_patterns = {
   '^[Arena Queue Announcer]',
   '^[Arena Queue]',
   '^[BG Queue]',
+  '^[Quest Helper] This server automatically notifies',
   '^Top PvP players of the month', -- pvp header
   {"^%d+%. .- %- %d+$", " - "},  -- Leaderboard rows e.g. "1. Mustang - 212" through "10. Bryle - 78"
   'Check all PvP statistics', -- pvp footer
