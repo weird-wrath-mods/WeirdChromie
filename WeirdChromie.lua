@@ -11,6 +11,7 @@ local system_patterns = {
   '^[Arena Queue]',
   '^[BG Queue]',
   '^[Quest Helper] This server automatically notifies',
+  '^If you suspect another player of breaking',
   '^Top PvP players of the month', -- pvp header
   {"^%d+%. .- %- %d+$", " - "},  -- Leaderboard rows e.g. "1. Mustang - 212" through "10. Bryle - 78"
   'Check all PvP statistics', -- pvp footer
@@ -40,6 +41,7 @@ local system_patterns = {
   '^Tip: You can use the',
   '^Tip: Stuck on a quest',
   '^Tip: Battlegrounds give experience',
+  '^Tip: Join a guild and make friends',
   '^There is no guild recruitment in',
   '^BGs have boosted XP',
 
@@ -1371,6 +1373,7 @@ lfgFix:SetScript("OnEvent", function(self)
     parent:HookScript("OnShow", function() elapsedAcc = 0; heartbeat:Show() end)
     parent:HookScript("OnHide", function() heartbeat:Hide() end)
   end
+
 end)
 
 ------------------------------
