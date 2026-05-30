@@ -6,7 +6,7 @@
 ## X-Website:
 ## Version: 1.0.0
 ## SavedVariablesPerCharacter: WeirdChromieDB
-## OptionalDeps: ElvUI, pfUI, ShaguTweaks, Chatsuey, CleanChat, Prat, OnlyASCII, ShaguChat, ShaguColor, SpamThrottle, TurtleChatColors, Sink-1.0, Parrot
+## OptionalDeps: ElvUI, pfUI, ShaguTweaks, Chatsuey, CleanChat, Prat, OnlyASCII, ShaguChat, ShaguColor, SpamThrottle, TurtleChatColors, Sink-1.0, Parrot, Leatrix_Plus
 # ^ No real dependency, just ensuring they load first. ElvUI in particular
 #   replaces the group-loot UI and depends on CANCEL_LOOT_ROLL for cleanup;
 #   loading it first guarantees its START_LOOT_ROLL handler dispatches before

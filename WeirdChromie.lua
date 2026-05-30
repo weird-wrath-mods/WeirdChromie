@@ -449,8 +449,54 @@ local function handle_loot_roll(rollID)
   end
 end
 
+-- NPCs where no addon should auto-select a gossip option. Leatrix Plus
+-- eagerly clicks option 1 on GOSSIP_SHOW; for these NPCs the first option is
+-- almost never the one we want (e.g. Surristrasz at Coldarra lists several
+-- drake flight destinations), so the player must choose.
+local gossip_no_autoselect = {
+  ["Surristrasz"] = true,
+}
+
+local function npc_autoselect_blocked()
+  local name = UnitName("npc")
+  return name ~= nil and gossip_no_autoselect[name] == true
+end
+
+-- Genuine option clicks route through GossipTitleButton_OnClick; auto-selects
+-- (Leatrix, our own handler, the default UI) call SelectGossipOption directly.
+-- We flag the real-click window so the SelectGossipOption gate below can tell
+-- the two apart.
+local wc_user_gossip_click = false
+if type(GossipTitleButton_OnClick) == "function" then
+  local orig_click = GossipTitleButton_OnClick
+  function GossipTitleButton_OnClick(...)
+    wc_user_gossip_click = true
+    orig_click(...)
+    wc_user_gossip_click = false
+  end
+end
+
+-- Drop programmatic selects at protected NPCs (Leatrix calls the global by
+-- name, so our wrapper wins regardless of load order). Only gate when a real
+-- choice exists (>1 option); a lone option has nothing to pick anyway.
+if type(SelectGossipOption) == "function" then
+  local orig_select = SelectGossipOption
+  function SelectGossipOption(...)
+    if not wc_user_gossip_click and npc_autoselect_blocked()
+       and GetNumGossipOptions() > 1 then
+      if WeirdChromieDB and WeirdChromieDB.debug then
+        DEFAULT_CHAT_FRAME:AddMessage(
+          "|cff33ff99[WC]|r blocked gossip auto-select at " .. (UnitName("npc") or "?"))
+      end
+      return
+    end
+    return orig_select(...)
+  end
+end
+
 local function handle_gossip_show()
   if not gossip_enabled() or IsControlKeyDown() then return end
+  if npc_autoselect_blocked() then return end
 
   -- If quests are involved, leave it to the player
   if GetGossipAvailableQuests() or GetGossipActiveQuests() then return end
