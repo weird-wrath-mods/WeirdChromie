@@ -261,6 +261,10 @@ local function auto_pass_enabled()
   return WeirdChromieDB and WeirdChromieDB.auto_pass_recipes == true
 end
 
+local function auto_confirm_bind_enabled()
+  return not WeirdChromieDB or WeirdChromieDB.auto_confirm_bind ~= false
+end
+
 -- RollOnLoot rollType: 0 = pass, 1 = need, 2 = greed, 3 = disenchant.
 -- Need/Greed/DE on a BoP item shows the "Looting this item will bind it to
 -- you" confirmation popup (CONFIRM_LOOT_ROLL event); the roll only commits
@@ -334,6 +338,60 @@ local function handle_confirm_loot_roll(rollID, rollType)
   pending_confirms[rollID] = nil
   confirm_queue[rollID] = pending
   confirm_dispatcher:Show()
+end
+
+-- Solo BoP loot auto-confirm. Looting a Bind-on-Pickup item fires
+-- LOOT_BIND_CONFIRM and Blizzard shows the "this item will bind to you"
+-- popup (StaticPopup LOOT_BIND, accepts via ConfirmLootSlot(slot)). With no
+-- party/raid there's no one to pass to, so confirm it for the player. In a
+-- group we leave the popup alone. We also honour the configured pass rules:
+-- if the slot's item is one we'd pass on (recipes when auto-pass is on, JC
+-- designs set to "Pass"), don't force-bind it. BoE greens and the bandage
+-- aren't BoP, so they never reach this popup.
+local function in_group()
+  return (GetNumPartyMembers() or 0) > 0 or (GetNumRaidMembers() or 0) > 0
+end
+
+local function loot_matches_pass_rule(link)
+  if not link then return false end
+  if auto_pass_enabled() then
+    for _, needle in ipairs(auto_pass_items) do
+      if string.find(link, needle, 1, true) then return true end
+    end
+  end
+  if WeirdChromieDB and WeirdChromieDB.jc_design_roll == 0 then
+    for _, needle in ipairs(jc_design_drops) do
+      if string.find(link, needle, 1, true) then return true end
+    end
+  end
+  return false
+end
+
+-- Deferred a tick for the same reason as the roll confirm above: a
+-- synchronous ConfirmLootSlot can race Blizzard's popup setup and leave the
+-- dialog on screen.
+local bind_confirm_queue = {}
+local bind_confirm_dispatcher = CreateFrame("Frame")
+bind_confirm_dispatcher:Hide()
+bind_confirm_dispatcher:SetScript("OnUpdate", function(self)
+  for slot in pairs(bind_confirm_queue) do
+    ConfirmLootSlot(slot)
+    StaticPopup_Hide("LOOT_BIND")
+    if WeirdChromieDB and WeirdChromieDB.debug then
+      DEFAULT_CHAT_FRAME:AddMessage(
+        "|cff33ff99[WC]|r confirmed BoP loot slot " .. tostring(slot))
+    end
+    bind_confirm_queue[slot] = nil
+  end
+  self:Hide()
+end)
+
+local function handle_loot_bind_confirm(slot)
+  if not auto_confirm_bind_enabled() then return end
+  if in_group() then return end
+  if loot_matches_pass_rule(GetLootSlotLink(slot)) then return end
+  bind_confirm_queue[slot] = true
+  bind_confirm_dispatcher:Show()
 end
 
 local function handle_loot_roll(rollID)
@@ -611,6 +669,7 @@ WeirdChromie:RegisterEvent("GOSSIP_SHOW")
 WeirdChromie:RegisterEvent("PLAYER_ENTERING_WORLD")
 WeirdChromie:RegisterEvent("START_LOOT_ROLL")
 WeirdChromie:RegisterEvent("CONFIRM_LOOT_ROLL")
+WeirdChromie:RegisterEvent("LOOT_BIND_CONFIRM")
 WeirdChromie:RegisterEvent("UI_ERROR_MESSAGE")
 WeirdChromie:RegisterEvent("MAIL_INBOX_UPDATE")
 WeirdChromie:SetScript("OnEvent", function(self, event, ...)
@@ -626,6 +685,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
       if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
+      if WeirdChromieDB.auto_confirm_bind == nil then WeirdChromieDB.auto_confirm_bind = true end
       if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
@@ -649,6 +709,8 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
     handle_loot_roll(rollID)
   elseif event == "CONFIRM_LOOT_ROLL" then
     handle_confirm_loot_roll(...)
+  elseif event == "LOOT_BIND_CONFIRM" then
+    handle_loot_bind_confirm(...)
   elseif event == "UI_ERROR_MESSAGE" then
     handle_ui_error(...)
   elseif event == "MAIL_INBOX_UPDATE" then
@@ -806,6 +868,16 @@ cbAutoDeleteMail:SetPoint("TOPLEFT", cbSilence, "TOPLEFT", 180, 0)
 cbAutoDeleteMail:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_delete_mail = self:GetChecked() and true or false
+end)
+
+local cbAutoConfirmBind = make_check(
+  "WeirdChromieOptionAutoConfirmBind",
+  "Auto-confirm solo BoP loot",
+  "When not in a party or raid, automatically accept the bind-on-pickup loot confirmation. Items set to pass (recipes, JC designs) are left alone.",
+  cbGossip)
+cbAutoConfirmBind:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_confirm_bind = self:GetChecked() and true or false
 end)
 
 -- JC design roll dropdown: Off / Pass / Greed / Need.
@@ -967,6 +1039,7 @@ optionsPanel:SetScript("OnShow", function()
   cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
   cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
   cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
+  cbAutoConfirmBind:SetChecked(WeirdChromieDB.auto_confirm_bind ~= false)
   UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
   UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))
   cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
@@ -1213,11 +1286,14 @@ local SKYTALON_SELFCAST = {
 
 -- Each button uses a secure state driver to swap modes:
 --   in vehicle UI: type=macro, macrotext casts the spell on @player.
---   out of vehicle: type=action, action=N, fires the player's action slot N
---     directly via the secure action handler. Independent of which action-
---     bar mod owns the visible button — /click ActionButtonN silently fails
---     under ElvUI/etc. because the Blizzard frame is hidden, but invoking
---     the action slot via the secure handler does not.
+--   out of vehicle: type=click, forwarding to the live bar button for slot N
+--     (resolved at install: BT4Button3 / ElvUI_Bar1Button3 / ActionButton3).
+--     Forwarding to the visible button means the key follows that bar's
+--     form/stance paging exactly like a mouse click: a feral in cat form or
+--     priest in shadowform fires the paged spell, not the base page-1 action.
+--     A fixed type=action,action=N ignores bonus-bar/stance paging and was
+--     the cause of the cat/bear/shadowform keybind bug. Falls back to
+--     type=action,action=N only when no live bar button can be resolved.
 local skytalon_buttons = {}
 for i, entry in ipairs(SKYTALON_SELFCAST) do
   local btn = CreateFrame("Button", "WeirdChromieSkytalon" .. i,
@@ -1230,6 +1306,8 @@ for i, entry in ipairs(SKYTALON_SELFCAST) do
     if newstate == "in" then
       self:SetAttribute("type", "macro")
       self:SetAttribute("macrotext", "/target [noexists][harm] vehicle\n/cast %s")
+    elseif self:GetAttribute("use-click") then
+      self:SetAttribute("type", "click")
     else
       self:SetAttribute("type", "action")
       self:SetAttribute("action", %d)
@@ -1245,6 +1323,28 @@ local function skytalon_should_install()
      and GetRealZoneText() == SKYTALON_ZONE
 end
 
+-- Find the live, visible bar button for an action slot (1-12). Both
+-- Bartender4 and ElvUI are installed, so both addons' button frames can
+-- exist as globals at once; prefer the one actually shown, falling back to
+-- the first that exists. The out-of-vehicle override forwards a click here
+-- so the key follows that bar's paging instead of a fixed page-1 slot.
+local function resolve_live_button(slot)
+  local names = {
+    "BT4Button" .. slot,         -- Bartender4 bar 1
+    "ElvUI_Bar1Button" .. slot,  -- ElvUI bar 1
+    "ActionButton" .. slot,      -- Blizzard default bar
+  }
+  local first
+  for _, name in ipairs(names) do
+    local f = _G[name]
+    if f then
+      first = first or f
+      if f:IsVisible() then return f end
+    end
+  end
+  return first
+end
+
 apply_skytalon_override = function()
   if skytalon_override_active then return end
   if InCombatLockdown() then return end
@@ -1252,6 +1352,16 @@ apply_skytalon_override = function()
   local verbose = WeirdChromieDB and WeirdChromieDB.debug
   for i, entry in ipairs(SKYTALON_SELFCAST) do
     local btn = skytalon_buttons[i]
+    -- Forward target for the out-of-vehicle mode, set once out of combat.
+    -- The secure snippet only flips `type`; it never touches clickbutton.
+    local live = resolve_live_button(entry.slot)
+    if live then
+      btn:SetAttribute("clickbutton", live)
+      btn:SetAttribute("use-click", true)
+    else
+      btn:SetAttribute("clickbutton", nil)
+      btn:SetAttribute("use-click", false)
+    end
     RegisterStateDriver(btn, "veh", "[vehicleui][bonusbar:5] in; out")
     -- State driver only fires the snippet on state changes; set the
     -- current mode manually so toggling on while already mounted works.
@@ -1260,6 +1370,9 @@ apply_skytalon_override = function()
       btn:SetAttribute("macrotext",
         "/target [noexists][harm] vehicle\n/cast " .. entry.spell)
       btn:SetAttribute("last-state", "in")
+    elseif live then
+      btn:SetAttribute("type", "click")
+      btn:SetAttribute("last-state", "out")
     else
       btn:SetAttribute("type", "action")
       btn:SetAttribute("action", entry.slot)
@@ -1278,7 +1391,9 @@ apply_skytalon_override = function()
         ": ACTIONBUTTON" .. entry.slot .. " bound to '" ..
         tostring(k1 or "<none>") .. "'" ..
         (k2 and ("/'" .. k2 .. "'") or "") ..
-        " -> " .. btn:GetName())
+        " -> " .. btn:GetName() ..
+        (live and (" (fwd " .. live:GetName() .. ")")
+              or " (no live btn: fixed slot " .. entry.slot .. ")"))
     end
   end
   skytalon_override_active = true
