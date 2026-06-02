@@ -151,6 +151,14 @@ local jc_design_drops = {
   "Design: Infused Twilight Opal",        -- Azjol-Nerub (heroic), Anub'arak
 }
 
+-- Frozen Orb drops from the final boss of every heroic Northrend 5-man.
+-- Tradeable (not BoP), so it's a normal group-loot roll. Roll action is
+-- configurable (pass/greed/need) via WeirdChromieDB.frozen_orb_roll, and only
+-- fires while inside a 5-man dungeon so raid-zone Frozen Orb rolls are left alone.
+local frozen_orb_drops = {
+  "Frozen Orb",
+}
+
 -- Mailbox auto-delete: senders whose mail should be auto-cleared on
 -- MAIL_INBOX_UPDATE. `name` is exact sender match. `item` is the only
 -- attachment we'll take and destroy; if a mail from this sender carries
@@ -352,6 +360,13 @@ local function in_group()
   return (GetNumPartyMembers() or 0) > 0 or (GetNumRaidMembers() or 0) > 0
 end
 
+-- IsInInstance returns instanceType "party" for 5-man dungeons (normal and
+-- heroic) and "raid" for raids. Frozen Orb auto-roll is gated to 5-mans.
+local function in_five_man()
+  local inInstance, instanceType = IsInInstance()
+  return inInstance and instanceType == "party"
+end
+
 local function loot_matches_pass_rule(link)
   if not link then return false end
   if auto_pass_enabled() then
@@ -423,6 +438,16 @@ local function handle_loot_roll(rollID)
     for _, needle in ipairs(jc_design_drops) do
       if string.find(link, needle, 1, true) then
         do_auto_roll(rollID, link, jc_roll)
+        return
+      end
+    end
+  end
+
+  local frozen_roll = db and db.frozen_orb_roll
+  if (frozen_roll == 0 or frozen_roll == 1 or frozen_roll == 2) and in_five_man() then
+    for _, needle in ipairs(frozen_orb_drops) do
+      if string.find(link, needle, 1, true) then
+        do_auto_roll(rollID, link, frozen_roll)
         return
       end
     end
@@ -727,6 +752,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.drake_locked  == nil then WeirdChromieDB.drake_locked  = false end
       if WeirdChromieDB.auto_pass_recipes == nil then WeirdChromieDB.auto_pass_recipes = false end
       if WeirdChromieDB.jc_design_roll == nil then WeirdChromieDB.jc_design_roll = false end
+      if WeirdChromieDB.frozen_orb_roll == nil then WeirdChromieDB.frozen_orb_roll = false end
       if WeirdChromieDB.boe_green_roll == nil then WeirdChromieDB.boe_green_roll = false end
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
@@ -1007,6 +1033,32 @@ UIDropDownMenu_Initialize(boeDropdown, function()
   end
 end)
 
+-- Frozen Orb roll dropdown: Off / Pass / Greed / Need (reuses jc_roll_choices).
+-- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
+local frozenLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+frozenLabel:SetPoint("TOPLEFT", boeLabel, "TOPLEFT", 160, 0)
+frozenLabel:SetText("Frozen Orb")
+frozenLabel.tooltipText = "Auto-roll on Frozen Orb from heroic 5-man dungeon bosses. Only fires inside a 5-man dungeon."
+
+local frozenDropdown = CreateFrame("Frame", "WeirdChromieOptionFrozenDropdown", optionsPanel, "UIDropDownMenuTemplate")
+frozenDropdown:SetPoint("TOPLEFT", frozenLabel, "BOTTOMLEFT", -16, -4)
+UIDropDownMenu_SetWidth(frozenDropdown, 100)
+
+UIDropDownMenu_Initialize(frozenDropdown, function()
+  for _, c in ipairs(jc_roll_choices) do
+    local info = UIDropDownMenu_CreateInfo()
+    info.text = c.text
+    info.value = c.value
+    info.checked = (WeirdChromieDB and WeirdChromieDB.frozen_orb_roll == c.value)
+    info.func = function(self)
+      WeirdChromieDB = WeirdChromieDB or {}
+      WeirdChromieDB.frozen_orb_roll = self.value
+      UIDropDownMenu_SetText(frozenDropdown, jc_roll_label(self.value))
+    end
+    UIDropDownMenu_AddButton(info)
+  end
+end)
+
 local cbBoeSkipDeWeapons = make_check(
   "WeirdChromieOptionBoeSkipDeWeapons",
   "Do not DE weapons/shields",
@@ -1087,6 +1139,7 @@ optionsPanel:SetScript("OnShow", function()
   cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
   cbAutoConfirmBind:SetChecked(WeirdChromieDB.auto_confirm_bind ~= false)
   UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
+  UIDropDownMenu_SetText(frozenDropdown, jc_roll_label(WeirdChromieDB.frozen_orb_roll))
   UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))
   cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
   cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
