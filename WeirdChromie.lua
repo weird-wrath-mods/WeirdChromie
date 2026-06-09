@@ -1,6 +1,15 @@
 -- Name: WeirdChromie (3.3.5 Wrath, ChromieCraft)
 -- Originally based on SilentServer for Turtle WoW.
 
+-- AzerothCore sends a NOT_IN_LFG channel notice (ChatNotify 0x21) for the
+-- LookingForGroup channel, but 3.3.5a never defined CHAT_NOT_IN_LFG_NOTICE, so
+-- ChatFrame.lua:2802 does format(nil, ...) and errors (most visible on a fresh
+-- char). Define the missing global so the stock handler formats cleanly.
+-- (ElvUI sidesteps this by returning early on arg1 == "NOT_IN_LFG".)
+if not CHAT_NOT_IN_LFG_NOTICE then
+  CHAT_NOT_IN_LFG_NOTICE = "You are not in the LFG system, and cannot chat in this channel."
+end
+
 -- String entries are plain literals (matched with string.find plain=true).
 -- A leading '^' anchors the literal to the start of the message.
 -- Table entries {pattern, guard} are Lua patterns; `guard` is a cheap plain
@@ -48,6 +57,7 @@ local system_patterns = {
   '^Auction deposits are only', -- we need to determine real costs and adjust them
 
   '^Participants of the event can become revived', -- mass-PvP .fun return blurb
+  "'.fun return' is now deactivated", -- server spam after the command was disabled
 
   -- Weekly arena-point flush sequence; consolidated to a single
   -- "Arena points updated." headline (rewritten on the final line below).
@@ -96,6 +106,17 @@ local system_rewrites = {
     needle = "[server]",
     anchored = true,
     rewrite = function(msg)
+      -- Silence restart announcements more than 1 hour out (e.g. "Restart in
+      -- 3 hour(s) 2 minute(s)", "1 hour(s) 50 minute(s)"); keep warnings of
+      -- 1 hour or less.
+      local lowered = string.lower(msg)
+      local hours = string.match(lowered, "restart in (%d+)%s*hour")
+      if hours then
+        local mins = tonumber(string.match(lowered, "hour%S*%s*(%d+)%s*min")) or 0
+        if tonumber(hours) * 60 + mins > 60 then
+          return false
+        end
+      end
       local pos = string.find(msg, ".", 1, true)
       return pos and (string.sub(msg, 1, pos) .. "|r") or nil
     end,
@@ -174,6 +195,38 @@ local ignore_npc = {
   ["Tansy Sparkpen"] = true, -- gadgetzan times
   ["Fara Boltbreaker"] = true, -- gadgetzan times
 }
+
+-- Dalaran ambient NPCs to silence. Keyed on the exact NPC name (the chat
+-- "sender"). Every CHAT_MSG_MONSTER_SAY / CHAT_MSG_MONSTER_EMOTE line from a
+-- listed speaker is dropped, except lines matching that NPC's own `allow`
+-- substrings (plain, case-insensitive), which still come through. An empty
+-- `allow` blocks everything that NPC says. With Debug on, blocked lines are
+-- printed with their speaker so you can pick out any you want to allow.
+local dalaran_block_npc = {
+  ["Abra Cadabra"]        = { allow = {} },
+  ["Bragund Brightlink"]  = { allow = {} },
+  ["Griselda Hunderland"] = { allow = {} },
+  ["Disidra Stormglory"]  = { allow = {} },
+  ["Edward Egan"]   = { allow = {} },
+  ["Patricia Egan"]   = { allow = {} },
+  ["Ranid Glowergold"]   = { allow = {} },
+  ["Larana Drome"]   = { allow = {} },
+  ["Tiffany Cartier"]   = { allow = {} },
+  ["Jessica Sellers"]   = { allow = {} },
+  ["Dominique Stefano"]   = { allow = {} },
+
+  ["Warp-Huntress Kula"]  = { allow = {} },
+  ["Backbiter"]  = { allow = {} },
+}
+
+-- Pre-lowercase each NPC's allow substrings once.
+for _, def in pairs(dalaran_block_npc) do
+  local lc = {}
+  for _, s in ipairs(def.allow) do
+    table.insert(lc, string.lower(s))
+  end
+  def.allow_lc = lc
+end
 
 ------------------------------
 -- Gossip skip (ported from LazyWeirdo)
@@ -263,6 +316,10 @@ end
 
 local function silence_enabled()
   return not WeirdChromieDB or WeirdChromieDB.silence ~= false
+end
+
+local function block_dalaran_enabled()
+  return not WeirdChromieDB or WeirdChromieDB.block_dalaran_npc ~= false
 end
 
 local function auto_pass_enabled()
@@ -759,6 +816,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
       if WeirdChromieDB.auto_confirm_bind == nil then WeirdChromieDB.auto_confirm_bind = true end
       if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
+      if WeirdChromieDB.block_dalaran_npc == nil then WeirdChromieDB.block_dalaran_npc = true end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
@@ -852,8 +910,38 @@ local function monster_yell_filter(self, event, msg, sender, ...)
   return false
 end
 
+-- Drop the bogus NOT_IN_LFG channel notice the server sends on the
+-- LookingForGroup channel (see CHAT_NOT_IN_LFG_NOTICE define above).
+local function channel_notice_filter(self, event, arg1, ...)
+  if not silence_enabled() then return false end
+  if arg1 == "NOT_IN_LFG" then
+    return true
+  end
+  return false
+end
+
+-- Dalaran ambient NPC say/emote. Drop everything from a listed speaker unless
+-- the line is on the allow list. Keyed on the exact NPC name, so it is a no-op
+-- for every other monster say/emote.
+local function dalaran_npc_filter(self, event, msg, sender, ...)
+  if not block_dalaran_enabled() then return false end
+  local def = sender and dalaran_block_npc[sender]
+  if not def then return false end
+  local lowered = string.lower(strip_colors(msg or ""))
+  for _, needle in ipairs(def.allow_lc) do
+    if string.find(lowered, needle, 1, true) then
+      return false
+    end
+  end
+  debug_print("dalaran:" .. tostring(sender), msg)
+  return true
+end
+
 ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", system_filter)
 ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_YELL", monster_yell_filter)
+ChatFrame_AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE", channel_notice_filter)
+ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_SAY", dalaran_npc_filter)
+ChatFrame_AddMessageEventFilter("CHAT_MSG_MONSTER_EMOTE", dalaran_npc_filter)
 
 -- Forward declarations so the options panel's checkbox callbacks can
 -- reach into the drake-button section defined further down.
@@ -950,6 +1038,16 @@ local cbAutoConfirmBind = make_check(
 cbAutoConfirmBind:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_confirm_bind = self:GetChecked() and true or false
+end)
+
+local cbBlockDalaran = make_check(
+  "WeirdChromieOptionBlockDalaran",
+  "Block Dalaran NPC chatter",
+  "Silence the listed Dalaran ambient NPCs (say/emote) entirely, except lines on the allow list. Turn on Debug to print blocked lines with their speaker.",
+  cbAutoConfirmBind)
+cbBlockDalaran:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.block_dalaran_npc = self:GetChecked() and true or false
 end)
 
 -- JC design roll dropdown: Off / Pass / Greed / Need.
@@ -1138,6 +1236,7 @@ optionsPanel:SetScript("OnShow", function()
   cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
   cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
   cbAutoConfirmBind:SetChecked(WeirdChromieDB.auto_confirm_bind ~= false)
+  cbBlockDalaran:SetChecked(WeirdChromieDB.block_dalaran_npc ~= false)
   UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
   UIDropDownMenu_SetText(frozenDropdown, jc_roll_label(WeirdChromieDB.frozen_orb_roll))
   UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))

@@ -6,6 +6,7 @@ ChromieCraft (3.3.5) addon. Quality-of-life patches for the things the server ge
 Features
 ---
 * Silence ChromieCraft server spam (queue announcers, leaderboards, tips, server notices, joyous journeys, etc.).
+* Silence specific Dalaran ambient NPCs chatter
 * Auto-skip routine NPC gossip.
 * Auto-pass group loot rolls on Heavy Frostweave Bandage and the four Northrend mob-drop cooking recipes.
 * Auto-roll (pass/greed/need) on the BoP jewelcrafting designs from Northrend dungeon bosses.
