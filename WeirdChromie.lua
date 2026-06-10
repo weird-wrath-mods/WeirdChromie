@@ -215,8 +215,11 @@ local dalaran_block_npc = {
   ["Jessica Sellers"]   = { allow = {} },
   ["Dominique Stefano"]   = { allow = {} },
 
+  ["Ildine Sorrowspear"]   = { allow = {} },
+
   ["Warp-Huntress Kula"]  = { allow = {} },
   ["Backbiter"]  = { allow = {} },
+  ["Moon Priestess Nici"]  = { allow = {} },
 }
 
 -- Pre-lowercase each NPC's allow substrings once.
