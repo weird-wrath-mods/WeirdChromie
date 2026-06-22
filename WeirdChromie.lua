@@ -31,6 +31,15 @@ local system_patterns = {
 
   '^ChromieCraft is a welcoming place',
   '^Welcome to ChromieCraft',
+
+  -- PTR realm banners.
+  '^This server is running the PTR',
+  '^This is a TEST',
+  -- PTR also prints a banner line that is just the name wrapped in glyphs the
+  -- 3.3.5a font can't render (shown as "?ChromieCraft?"). Match a line that is
+  -- only the name plus non-letter decoration so real sentence mentions are kept.
+  {"^[^%a]*chromiecraft[^%a]*$", "chromiecraft"},
+
   '^This server runs on AzerothCore',
   '^This server features a Recruit',
   '^This Server Max Account of Same IP is:',
@@ -214,6 +223,7 @@ local dalaran_block_npc = {
   ["Tiffany Cartier"]   = { allow = {} },
   ["Jessica Sellers"]   = { allow = {} },
   ["Dominique Stefano"]   = { allow = {} },
+  ["Orland Schaeffer"]   = { allow = {} },
 
   ["Ildine Sorrowspear"]   = { allow = {} },
 
