@@ -4,7 +4,7 @@
 ## X-Category: Interface Enhancements
 ## X-Date: 2024-05-24
 ## X-Website:
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariablesPerCharacter: WeirdChromieDB
 ## OptionalDeps: ElvUI, pfUI, ShaguTweaks, Chatsuey, CleanChat, Prat, OnlyASCII, ShaguChat, ShaguColor, SpamThrottle, TurtleChatColors, Sink-1.0, Parrot, Leatrix_Plus
 # ^ No real dependency, just ensuring they load first. ElvUI in particular

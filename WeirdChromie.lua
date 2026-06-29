@@ -640,6 +640,10 @@ local function auto_dismount_enabled()
   return WeirdChromieDB and WeirdChromieDB.auto_dismount == true
 end
 
+local function no_rightclick_attack_enabled()
+  return WeirdChromieDB and WeirdChromieDB.no_rightclick_attack == true
+end
+
 local function auto_delete_mail_enabled()
   return not WeirdChromieDB or WeirdChromieDB.auto_delete_mail ~= false
 end
@@ -826,6 +830,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.boe_green_roll == nil then WeirdChromieDB.boe_green_roll = false end
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
+      if WeirdChromieDB.no_rightclick_attack == nil then WeirdChromieDB.no_rightclick_attack = false end
       if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
       if WeirdChromieDB.auto_confirm_bind == nil then WeirdChromieDB.auto_confirm_bind = true end
       if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
@@ -860,6 +865,43 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
     handle_mail_inbox_update()
   end
 end)
+
+------------------------------
+-- Disable right-click-to-attack (ported from fondlez/RightClick)
+--
+-- Right-dragging to turn the camera and releasing over an alive enemy fires
+-- WoW's right-click "attack/interact" action, pulling mobs or swapping target
+-- by accident. We watch the mouseover unit; on right-button-up over the world,
+-- if the recently-hovered unit (within 5s) or the current target is an alive
+-- enemy, MouselookStop() cancels the pending click so no attack is issued.
+-- The hook is installed once at load and gated on the toggle at fire time.
+------------------------------
+
+local rc_mouse = CreateFrame("Frame")
+rc_mouse.time = 0
+rc_mouse.isAliveEnemy = false
+rc_mouse:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+rc_mouse:SetScript("OnEvent", function(self)
+  if not no_rightclick_attack_enabled() then return end
+  self.time = GetTime()
+  self.isAliveEnemy = not UnitIsDeadOrGhost("mouseover")
+    and UnitCanAttack("player", "mouseover")
+end)
+
+local function rc_on_mouseup(self, button)
+  if button ~= "RightButton" then return end
+  if not no_rightclick_attack_enabled() then return end
+  if (GetTime() - rc_mouse.time) > 5 then return end
+  local targetIsAliveEnemy = UnitExists("target")
+    and not UnitIsDeadOrGhost("target") and UnitCanAttack("player", "target")
+  if rc_mouse.isAliveEnemy or targetIsAliveEnemy then
+    MouselookStop()
+  end
+end
+
+WorldFrame:HookScript("OnMouseUp", rc_on_mouseup)
+
+------------------------------
 
 local function strip_colors(s)
   s = string.gsub(s, "|c%x%x%x%x%x%x%x%x", "")
@@ -974,6 +1016,10 @@ local title = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge
 title:SetPoint("TOPLEFT", 16, -16)
 title:SetText("WeirdChromie")
 
+local versionText = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+versionText:SetPoint("TOPRIGHT", optionsPanel, "TOPRIGHT", -16, -16)
+versionText:SetText("v" .. (GetAddOnMetadata("WeirdChromie", "Version") or "?"))
+
 local subtitle = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
 subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
 subtitle:SetPoint("RIGHT", optionsPanel, -32, 0)
@@ -981,87 +1027,122 @@ subtitle:SetJustifyH("LEFT")
 subtitle:SetJustifyV("TOP")
 subtitle:SetText("Silence ChromieCraft server spam and auto-skip routine NPC gossip dialogues.")
 
-local function make_check(name, label, tooltip, anchor, x, y)
+-- Controls are placed at absolute (x, y) inside the panel and grouped under
+-- section headers (left column x = 16, right column x = 315), so adding an
+-- option means dropping it into a column instead of re-threading a chain of
+-- relative anchors.
+local COL_L, COL_R = 16, 315
+
+local function make_check(name, label, tooltip, x, y)
   local cb = CreateFrame("CheckButton", name, optionsPanel, "InterfaceOptionsCheckButtonTemplate")
-  cb:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", x or 0, y or -8)
+  cb:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", x, y)
   _G[cb:GetName() .. "Text"]:SetText(label)
   cb.tooltipText = tooltip
   return cb
 end
 
+local function make_header(text, x, y)
+  local h = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  h:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", x, y)
+  h:SetText(text)
+  h:SetTextColor(1, 0.82, 0)
+  return h
+end
+
+------------------------------
+-- Left column: Chat & Spam
+------------------------------
+make_header("Chat & Spam", COL_L, -64)
+
 local cbSilence = make_check(
   "WeirdChromieOptionSilence",
   "Silence server spam",
   "Filter out ChromieCraft server-spam system messages (BG/Arena queue announces, Top PvP leaderboard, server notices, etc.) and configured NPC yells.",
-  subtitle, 0, -16)
+  COL_L, -86)
 cbSilence:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.silence = self:GetChecked() and true or false
-end)
-
-local cbGossip = make_check(
-  "WeirdChromieOptionAutoGossip",
-  "Auto-skip gossip dialogues",
-  "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, dungeon-progression gossips like Chromie/Arthas in Culling of Stratholme, Oculus drake handlers, Halls of Stone Brann, etc.). Hold Ctrl to bypass for one interaction.",
-  cbSilence)
-cbGossip:ClearAllPoints()
-cbGossip:SetPoint("TOPLEFT", cbSilence, "TOPLEFT", 360, 0)
-cbGossip:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
-end)
-
-local cbAutoPass = make_check(
-  "WeirdChromieOptionAutoPass",
-  "Auto-pass on bandage and cooking recipes",
-  "Automatically pass on group loot rolls for Heavy Frostweave Bandage and dungeon cooking recipes.",
-  cbSilence)
-cbAutoPass:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.auto_pass_recipes = self:GetChecked() and true or false
-end)
-
-local cbAutoDismount = make_check(
-  "WeirdChromieOptionAutoDismount",
-  "Auto-dismount flying mounts when attacking",
-  "Automatically dismount from a flying mount when attempting an attack.",
-  cbAutoPass)
-cbAutoDismount:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.auto_dismount = self:GetChecked() and true or false
-end)
-
-local cbAutoDeleteMail = make_check(
-  "WeirdChromieOptionAutoDeleteMail",
-  "Auto-delete Manabonks",
-  "Automatically take and destroy The Mischief Maker from Minigob Manabonk mail, then delete the mail.",
-  cbSilence)
-cbAutoDeleteMail:ClearAllPoints()
-cbAutoDeleteMail:SetPoint("TOPLEFT", cbSilence, "TOPLEFT", 180, 0)
-cbAutoDeleteMail:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.auto_delete_mail = self:GetChecked() and true or false
-end)
-
-local cbAutoConfirmBind = make_check(
-  "WeirdChromieOptionAutoConfirmBind",
-  "Auto-confirm solo BoP loot",
-  "When not in a party or raid, automatically accept the bind-on-pickup loot confirmation. Items set to pass (recipes, JC designs) are left alone.",
-  cbGossip)
-cbAutoConfirmBind:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.auto_confirm_bind = self:GetChecked() and true or false
 end)
 
 local cbBlockDalaran = make_check(
   "WeirdChromieOptionBlockDalaran",
   "Block Dalaran NPC chatter",
   "Silence the listed Dalaran ambient NPCs (say/emote) entirely, except lines on the allow list. Turn on Debug to print blocked lines with their speaker.",
-  cbAutoConfirmBind)
+  COL_L, -110)
 cbBlockDalaran:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.block_dalaran_npc = self:GetChecked() and true or false
 end)
+
+local cbDebug = make_check(
+  "WeirdChromieOptionDebug",
+  "Debug capture (print silenced messages)",
+  "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
+  COL_L, -134)
+cbDebug:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.debug = self:GetChecked() and true or false
+end)
+
+------------------------------
+-- Left column: Automation
+------------------------------
+make_header("Automation", COL_L, -170)
+
+local cbGossip = make_check(
+  "WeirdChromieOptionAutoGossip",
+  "Auto-skip gossip dialogues",
+  "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, dungeon-progression gossips like Chromie/Arthas in Culling of Stratholme, Oculus drake handlers, Halls of Stone Brann, etc.). Hold Ctrl to bypass for one interaction.",
+  COL_L, -192)
+cbGossip:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
+end)
+
+local cbAutoConfirmBind = make_check(
+  "WeirdChromieOptionAutoConfirmBind",
+  "Auto-confirm solo BoP loot",
+  "When not in a party or raid, automatically accept the bind-on-pickup loot confirmation. Items set to pass (recipes, JC designs) are left alone.",
+  COL_L, -216)
+cbAutoConfirmBind:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_confirm_bind = self:GetChecked() and true or false
+end)
+
+local cbAutoDeleteMail = make_check(
+  "WeirdChromieOptionAutoDeleteMail",
+  "Auto-delete Manabonks",
+  "Automatically take and destroy The Mischief Maker from Minigob Manabonk mail, then delete the mail.",
+  COL_L, -240)
+cbAutoDeleteMail:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_delete_mail = self:GetChecked() and true or false
+end)
+
+local cbAutoDismount = make_check(
+  "WeirdChromieOptionAutoDismount",
+  "Auto-dismount flying mounts when attacking",
+  "Automatically dismount from a flying mount when attempting an attack.",
+  COL_L, -264)
+cbAutoDismount:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_dismount = self:GetChecked() and true or false
+end)
+
+local cbNoRightClickAttack = make_check(
+  "WeirdChromieOptionNoRightClickAttack",
+  "Disable right-click to attack enemies",
+  "Stop right-clicking from attacking or targeting an alive enemy. Right-dragging the camera and releasing over a mob no longer pulls or swaps target.",
+  COL_L, -288)
+cbNoRightClickAttack:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.no_rightclick_attack = self:GetChecked() and true or false
+end)
+
+------------------------------
+-- Right column: Loot Rolls
+------------------------------
+make_header("Loot Rolls", COL_R, -64)
 
 -- JC design roll dropdown: Off / Pass / Greed / Need.
 -- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
@@ -1080,12 +1161,12 @@ local function jc_roll_label(value)
 end
 
 local jcLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-jcLabel:SetPoint("TOPLEFT", cbAutoDismount, "BOTTOMLEFT", 0, -16)
+jcLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -88)
 jcLabel:SetText("JC Recipes")
 jcLabel.tooltipText = "Auto-roll on the BoP jewelcrafting designs that drop from Northrend dungeon bosses."
 
 local jcDropdown = CreateFrame("Frame", "WeirdChromieOptionJCDropdown", optionsPanel, "UIDropDownMenuTemplate")
-jcDropdown:SetPoint("TOPLEFT", jcLabel, "BOTTOMLEFT", -16, -4)
+jcDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -108)
 UIDropDownMenu_SetWidth(jcDropdown, 100)
 
 UIDropDownMenu_Initialize(jcDropdown, function()
@@ -1121,12 +1202,12 @@ local function boe_roll_label(value)
 end
 
 local boeLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-boeLabel:SetPoint("TOPLEFT", jcLabel, "TOPLEFT", 140, 0)
+boeLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -140)
 boeLabel:SetText("BoE Greens")
 boeLabel.tooltipText = "Auto-roll on uncommon (green) BoE drops."
 
 local boeDropdown = CreateFrame("Frame", "WeirdChromieOptionBoEDropdown", optionsPanel, "UIDropDownMenuTemplate")
-boeDropdown:SetPoint("TOPLEFT", boeLabel, "BOTTOMLEFT", -16, -4)
+boeDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -160)
 UIDropDownMenu_SetWidth(boeDropdown, 120)
 
 UIDropDownMenu_Initialize(boeDropdown, function()
@@ -1147,12 +1228,12 @@ end)
 -- Frozen Orb roll dropdown: Off / Pass / Greed / Need (reuses jc_roll_choices).
 -- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
 local frozenLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-frozenLabel:SetPoint("TOPLEFT", boeLabel, "TOPLEFT", 160, 0)
+frozenLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -192)
 frozenLabel:SetText("Frozen Orb")
 frozenLabel.tooltipText = "Auto-roll on Frozen Orb from heroic 5-man dungeon bosses. Only fires inside a 5-man dungeon."
 
 local frozenDropdown = CreateFrame("Frame", "WeirdChromieOptionFrozenDropdown", optionsPanel, "UIDropDownMenuTemplate")
-frozenDropdown:SetPoint("TOPLEFT", frozenLabel, "BOTTOMLEFT", -16, -4)
+frozenDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -212)
 UIDropDownMenu_SetWidth(frozenDropdown, 100)
 
 UIDropDownMenu_Initialize(frozenDropdown, function()
@@ -1174,17 +1255,32 @@ local cbBoeSkipDeWeapons = make_check(
   "WeirdChromieOptionBoeSkipDeWeapons",
   "Do not DE weapons/shields",
   "When the BoE roll is Disenchant, roll Greed on weapons and shields instead.",
-  boeDropdown, 16, -4)
+  COL_R + 16, -238)
 cbBoeSkipDeWeapons:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.boe_skip_de_weapons = self:GetChecked() and true or false
 end)
 
+local cbAutoPass = make_check(
+  "WeirdChromieOptionAutoPass",
+  "Auto-pass on bandage and cooking recipes",
+  "Automatically pass on group loot rolls for Heavy Frostweave Bandage and dungeon cooking recipes.",
+  COL_R, -262)
+cbAutoPass:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.auto_pass_recipes = self:GetChecked() and true or false
+end)
+
+------------------------------
+-- Bottom (full width): Encounter Helpers
+------------------------------
+make_header("Encounter Helpers", COL_L, -322)
+
 local cbDrakeEnabled = make_check(
   "WeirdChromieOptionDrakeEnabled",
   "Show Oculus drake essence button",
   "Show the movable drake-essence quick-use button while inside The Oculus and holding any drake essence in your bags.",
-  jcDropdown, 16, -32)
+  COL_L, -344)
 cbDrakeEnabled:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.drake_enabled = self:GetChecked() and true or false
@@ -1195,7 +1291,7 @@ local cbDrakeLocked = make_check(
   "WeirdChromieOptionDrakeLocked",
   "Lock position",
   "When unlocked, left-click and drag the drake-essence button to move it. Lock to prevent accidental drags.",
-  cbDrakeEnabled)
+  COL_L, -344)
 -- Place on the same row as cbDrakeEnabled, just past its label.
 cbDrakeLocked:ClearAllPoints()
 cbDrakeLocked:SetPoint("LEFT", _G["WeirdChromieOptionDrakeEnabledText"], "RIGHT", 16, 0)
@@ -1220,7 +1316,7 @@ local cbSkytalon = make_check(
   "WeirdChromieOptionSkytalon",
   "Self-cast Skytalon heals",
   "Eye of Eternity Phase 3, override Revivify and Life Burst to cast on yourself if you have no target or the target is hostile.",
-  cbDrakeEnabled)
+  COL_L, -368)
 cbSkytalon:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.skytalon_selfcast = self:GetChecked() and true or false
@@ -1231,22 +1327,13 @@ cbSkytalon:SetScript("OnClick", function(self)
   end
 end)
 
-local cbDebug = make_check(
-  "WeirdChromieOptionDebug",
-  "Debug capture (print silenced messages)",
-  "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
-  cbSkytalon)
-cbDebug:SetScript("OnClick", function(self)
-  WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.debug = self:GetChecked() and true or false
-end)
-
 optionsPanel:SetScript("OnShow", function()
   WeirdChromieDB = WeirdChromieDB or {}
   cbSilence:SetChecked(WeirdChromieDB.silence ~= false)
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
   cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
   cbAutoDismount:SetChecked(WeirdChromieDB.auto_dismount == true)
+  cbNoRightClickAttack:SetChecked(WeirdChromieDB.no_rightclick_attack == true)
   cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
   cbAutoConfirmBind:SetChecked(WeirdChromieDB.auto_confirm_bind ~= false)
   cbBlockDalaran:SetChecked(WeirdChromieDB.block_dalaran_npc ~= false)
