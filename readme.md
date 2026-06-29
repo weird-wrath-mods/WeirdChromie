@@ -14,7 +14,7 @@ Features
 * Auto-confirm the bind-on-pickup loot popup when solo. Skipped in a party/raid and for items the pass rules would pass on.
 * Auto-delete Minigob Manabonk spam mail and destroy the attached Mischief Maker. Skipped when bags are full.
 * Auto-dismount flying mounts when an attack is blocked by "Can't attack while mounted."
-* Disable right-click to attack alive enemies, so right-dragging the camera over a mob no longer pulls or swaps target. Default off.
+* Disable right-click to attack alive enemies, so right-dragging the camera over a mob no longer pulls or swaps target. Default on for hunters, off for everyone else.
 
 **Loot Rolls**
 * Auto-roll (pass/greed/need) on the BoP jewelcrafting designs from Northrend dungeon bosses.

@@ -830,7 +830,12 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.boe_green_roll == nil then WeirdChromieDB.boe_green_roll = false end
       if WeirdChromieDB.boe_skip_de_weapons == nil then WeirdChromieDB.boe_skip_de_weapons = true end
       if WeirdChromieDB.auto_dismount == nil then WeirdChromieDB.auto_dismount = false end
-      if WeirdChromieDB.no_rightclick_attack == nil then WeirdChromieDB.no_rightclick_attack = false end
+      if WeirdChromieDB.no_rightclick_attack == nil then
+        -- Hunters lose their target / pull mobs to right-click far more than
+        -- other classes, so default this on for them and off for everyone else.
+        local _, class = UnitClass("player")
+        WeirdChromieDB.no_rightclick_attack = (class == "HUNTER")
+      end
       if WeirdChromieDB.auto_delete_mail == nil then WeirdChromieDB.auto_delete_mail = true end
       if WeirdChromieDB.auto_confirm_bind == nil then WeirdChromieDB.auto_confirm_bind = true end
       if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
