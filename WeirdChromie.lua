@@ -321,6 +321,10 @@ local gossip_skip_by_npc = {
   ["Saronite Mine Slave"] = {
     free = "^Go on, you're free",
   },
+  -- Storm Peaks K3: vendor option sits beside "Tell me about demolishers."
+  ["Demolisher Engineer Blastwrench"] = {
+    browse = "^I want to browse your goods",
+  },
 }
 
 local function gossip_enabled()
@@ -614,6 +618,8 @@ local function handle_gossip_show()
   local npc_name = UnitName("npc")
   local npc_lines = npc_name and gossip_skip_by_npc[npc_name] or nil
 
+  -- Per-NPC lines match any option type (e.g. a vendor entry beside dialogue);
+  -- general patterns stay limited to plain gossip since they apply everywhere.
   for i, entry in ipairs(opts) do
     if entry.gossip == "gossip" then
       for _, pattern in pairs(gossip_skip_by_npc.general) do
@@ -622,12 +628,12 @@ local function handle_gossip_show()
           return
         end
       end
-      if npc_lines then
-        for _, pattern in pairs(npc_lines) do
-          if string.find(entry.text, pattern) then
-            SelectGossipOption(i)
-            return
-          end
+    end
+    if npc_lines then
+      for _, pattern in pairs(npc_lines) do
+        if string.find(entry.text, pattern) then
+          SelectGossipOption(i)
+          return
         end
       end
     end
