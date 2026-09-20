@@ -321,6 +321,13 @@ local gossip_skip_by_npc = {
   ["Saronite Mine Slave"] = {
     free = "^Go on, you're free",
   },
+  -- Brewfest: Coren Direbrew (creature 23872, menus 11387/11388 from AC
+  -- gossip_menu_option). "Apologize" just closes the window, so only the
+  -- insult and the fight confirmation are clicked.
+  ["Coren Direbrew"] = {
+    insult = "^Insult Coren Direbrew",   -- 11387/0
+    fight  = "^Fight",                  -- 11388/0
+  },
   -- Storm Peaks K3: vendor option sits beside "Tell me about demolishers."
   ["Demolisher Engineer Blastwrench"] = {
     browse = "^I want to browse your goods",
@@ -1709,6 +1716,9 @@ apply_skytalon_override = function()
 end
 
 clear_skytalon_override = function()
+  -- Runs on every combat exit outside Eye of Eternity. ClearOverrideBindings is
+  -- hooked by SnowfallKeyPress, which rebuilds all its overrides per call.
+  if not skytalon_override_active then return end
   if InCombatLockdown() then return end
   for _, btn in ipairs(skytalon_buttons) do
     ClearOverrideBindings(btn)
