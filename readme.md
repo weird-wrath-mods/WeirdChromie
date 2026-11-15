@@ -8,6 +8,7 @@ Features
 **Chat & Spam**
 * Silence ChromieCraft server spam (queue announcers, leaderboards, tips, server notices, joyous journeys, etc.).
 * Silence specific Dalaran ambient NPCs chatter
+* Shut up Rhonin: hide his Dalaran-wide Algalon speech from chat (voice-over still plays). Default off.
 
 **Automation**
 * Auto-skip routine NPC gossip.

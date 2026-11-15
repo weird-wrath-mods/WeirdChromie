@@ -346,6 +346,10 @@ local function block_dalaran_enabled()
   return not WeirdChromieDB or WeirdChromieDB.block_dalaran_npc ~= false
 end
 
+local function shut_up_rhonin_enabled()
+  return WeirdChromieDB and WeirdChromieDB.shut_up_rhonin == true
+end
+
 local function auto_pass_enabled()
   return WeirdChromieDB and WeirdChromieDB.auto_pass_recipes == true
 end
@@ -853,6 +857,7 @@ WeirdChromie:SetScript("OnEvent", function(self, event, ...)
       if WeirdChromieDB.auto_confirm_bind == nil then WeirdChromieDB.auto_confirm_bind = true end
       if WeirdChromieDB.skytalon_selfcast == nil then WeirdChromieDB.skytalon_selfcast = true end
       if WeirdChromieDB.block_dalaran_npc == nil then WeirdChromieDB.block_dalaran_npc = true end
+      if WeirdChromieDB.shut_up_rhonin == nil then WeirdChromieDB.shut_up_rhonin = false end
       if apply_drake_position then apply_drake_position() end
       if update_drake_button  then update_drake_button()  end
     end
@@ -976,6 +981,13 @@ local function system_filter(self, event, msg, ...)
 end
 
 local function monster_yell_filter(self, event, msg, sender, ...)
+  -- Rhonin's only yells are his zone-wide speech after someone hands in
+  -- Algalon's Reply-Code Alpha (creature_text 16128, groups 1-7), so the
+  -- speaker name alone identifies it.
+  if sender == "Rhonin" and shut_up_rhonin_enabled() then
+    debug_print("rhonin", msg)
+    return true
+  end
   if not silence_enabled() then return false end
   if sender and ignore_npc[sender] then
     return true
@@ -1045,38 +1057,139 @@ subtitle:SetJustifyH("LEFT")
 subtitle:SetJustifyV("TOP")
 subtitle:SetText("Silence ChromieCraft server spam and auto-skip routine NPC gossip dialogues.")
 
--- Controls are placed at absolute (x, y) inside the panel and grouped under
--- section headers (left column x = 16, right column x = 315), so adding an
--- option means dropping it into a column instead of re-threading a chain of
--- relative anchors.
+-- Layout. Every control sits in one of three blocks and stores its offset
+-- from that block's top-left. layout() then places the blocks by the panel's
+-- real width: side by side when both columns fit (the Interface Options
+-- window is only that wide when another addon enlarges it), otherwise stacked
+-- in one column. The stock panel is 413 x 428, too short for one column, so
+-- everything lives in a scroll frame.
+--   A = Chat & Spam, Automation     (left column / top)
+--   B = Loot Rolls, Encounter       (right column / middle)
+--   C = Debug                       (left column under A / bottom)
+-- "Left column" / "Right column" in the section comments below name the
+-- side-by-side arrangement. Within a block, rows are 24 apart (dropdown rows
+-- 28), a header sits 22 above its first row, and sub-options are indented by
+-- INDENT.
 local COL_L, COL_R = 16, 315
+local COL_R_WIDTH = 300   -- widest right-column row, incl. its label
+local INDENT = 16
+local BLOCK_GAP = 10
+local CONTENT_TOP = -8
 
-local function make_check(name, label, tooltip, x, y)
-  local cb = CreateFrame("CheckButton", name, optionsPanel, "InterfaceOptionsCheckButtonTemplate")
-  cb:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", x, y)
+local scroll = CreateFrame("ScrollFrame", "WeirdChromieOptionsScroll", optionsPanel, "UIPanelScrollFrameTemplate")
+scroll:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", 0, -56)
+scroll:SetPoint("BOTTOMRIGHT", optionsPanel, "BOTTOMRIGHT", -28, 6)
+-- The template's OnLoad has already run, so hide the bar by hand once; from
+-- here the stock range handler shows it only when there is something to scroll.
+scroll.scrollBarHideable = true
+_G["WeirdChromieOptionsScrollScrollBar"]:Hide()
+
+local content = CreateFrame("Frame", nil, scroll)
+content:SetWidth(1)
+content:SetHeight(1)
+scroll:SetScrollChild(content)
+
+local placed = {}                          -- { region, point, block, x, y }
+local block_bottom = { A = 0, B = 0, C = 0 }
+
+local function place(region, point, block, x, y, height)
+  table.insert(placed, { region, point, block, x, y })
+  block_bottom[block] = math.min(block_bottom[block], y - height)
+end
+
+local function layout()
+  local wide = optionsPanel:GetWidth() >= COL_R + COL_R_WIDTH
+  local hA, hB, hC = -block_bottom.A, -block_bottom.B, -block_bottom.C
+  local origin, height
+  if wide then
+    origin = {
+      A = { COL_L, CONTENT_TOP },
+      B = { COL_R, CONTENT_TOP },
+      C = { COL_L, CONTENT_TOP - hA - BLOCK_GAP },
+    }
+    height = math.max(hA + BLOCK_GAP + hC, hB)
+  else
+    origin = {
+      A = { COL_L, CONTENT_TOP },
+      B = { COL_L, CONTENT_TOP - hA - BLOCK_GAP },
+      C = { COL_L, CONTENT_TOP - hA - hB - 2 * BLOCK_GAP },
+    }
+    height = hA + hB + hC + 2 * BLOCK_GAP
+  end
+  for _, p in ipairs(placed) do
+    local o = origin[p[3]]
+    p[1]:ClearAllPoints()
+    p[1]:SetPoint(p[2], content, "TOPLEFT", o[1] + p[4], o[2] + p[5])
+  end
+  content:SetWidth(math.max(scroll:GetWidth(), 1))
+  content:SetHeight(height - CONTENT_TOP)
+end
+
+local function make_check(name, label, tooltip, block, x, y)
+  local cb = CreateFrame("CheckButton", name, content, "InterfaceOptionsCheckButtonTemplate")
   _G[cb:GetName() .. "Text"]:SetText(label)
   cb.tooltipText = tooltip
+  place(cb, "TOPLEFT", block, x, y, 26)
   return cb
 end
 
-local function make_header(text, x, y)
-  local h = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-  h:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", x, y)
+local function make_header(text, block, y)
+  local h = content:CreateFontString(nil, "ARTWORK", "GameFontNormal")
   h:SetText(text)
   h:SetTextColor(1, 0.82, 0)
+  place(h, "TOPLEFT", block, 0, y, 14)
   return h
+end
+
+local function roll_label(choices, value)
+  for _, c in ipairs(choices) do
+    if c.value == value then return c.text end
+  end
+  return "Off"
+end
+
+-- One "Label [dropdown]" row writing WeirdChromieDB[key]. The dropdown
+-- template has 16px of empty padding on its left and its box is centered 13px
+-- below the frame top, the same center line as a 26px checkbox placed at the
+-- same y, so the label is centered on that line too.
+local function make_roll_dropdown(name, label, choices, key, block, x, y)
+  local text = content:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  text:SetText(label)
+  place(text, "LEFT", block, x + 4, y - 13, 0)
+
+  local dd = CreateFrame("Frame", name, content, "UIDropDownMenuTemplate")
+  place(dd, "TOPLEFT", block, x + 84, y, 28)
+  UIDropDownMenu_SetWidth(dd, 110)
+  dd.refresh = function()
+    UIDropDownMenu_SetText(dd, roll_label(choices, WeirdChromieDB and WeirdChromieDB[key]))
+  end
+  UIDropDownMenu_Initialize(dd, function()
+    for _, c in ipairs(choices) do
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = c.text
+      info.value = c.value
+      info.checked = (WeirdChromieDB and WeirdChromieDB[key] == c.value)
+      info.func = function()
+        WeirdChromieDB = WeirdChromieDB or {}
+        WeirdChromieDB[key] = c.value
+        dd.refresh()
+      end
+      UIDropDownMenu_AddButton(info)
+    end
+  end)
+  return dd
 end
 
 ------------------------------
 -- Left column: Chat & Spam
 ------------------------------
-make_header("Chat & Spam", COL_L, -64)
+make_header("Chat & Spam", "A", 0)
 
 local cbSilence = make_check(
   "WeirdChromieOptionSilence",
   "Silence server spam",
   "Filter out ChromieCraft server-spam system messages (BG/Arena queue announces, Top PvP leaderboard, server notices, etc.) and configured NPC yells.",
-  COL_L, -86)
+  "A", 0, -22)
 cbSilence:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.silence = self:GetChecked() and true or false
@@ -1086,32 +1199,32 @@ local cbBlockDalaran = make_check(
   "WeirdChromieOptionBlockDalaran",
   "Block Dalaran NPC chatter",
   "Silence the listed Dalaran ambient NPCs (say/emote) entirely, except lines on the allow list. Turn on Debug to print blocked lines with their speaker.",
-  COL_L, -110)
+  "A", 0, -46)
 cbBlockDalaran:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.block_dalaran_npc = self:GetChecked() and true or false
 end)
 
-local cbDebug = make_check(
-  "WeirdChromieOptionDebug",
-  "Debug capture (print silenced messages)",
-  "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
-  COL_L, -134)
-cbDebug:SetScript("OnClick", function(self)
+local cbShutUpRhonin = make_check(
+  "WeirdChromieOptionShutUpRhonin",
+  "Shut up Rhonin",
+  "Hide Rhonin's Dalaran-wide speech about Algalon's defeat from chat. His voice-over still plays.",
+  "A", 0, -70)
+cbShutUpRhonin:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
-  WeirdChromieDB.debug = self:GetChecked() and true or false
+  WeirdChromieDB.shut_up_rhonin = self:GetChecked() and true or false
 end)
 
 ------------------------------
 -- Left column: Automation
 ------------------------------
-make_header("Automation", COL_L, -170)
+make_header("Automation", "A", -106)
 
 local cbGossip = make_check(
   "WeirdChromieOptionAutoGossip",
   "Auto-skip gossip dialogues",
   "Automatically click through routine NPC gossip options (taxi, vendor, banker, healer, dungeon-progression gossips like Chromie/Arthas in Culling of Stratholme, Oculus drake handlers, Halls of Stone Brann, etc.). Hold Ctrl to bypass for one interaction.",
-  COL_L, -192)
+  "A", 0, -128)
 cbGossip:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_gossip = self:GetChecked() and true or false
@@ -1121,7 +1234,7 @@ local cbAutoConfirmBind = make_check(
   "WeirdChromieOptionAutoConfirmBind",
   "Auto-confirm solo BoP loot",
   "When not in a party or raid, automatically accept the bind-on-pickup loot confirmation. Items set to pass (recipes, JC designs) are left alone.",
-  COL_L, -216)
+  "A", 0, -152)
 cbAutoConfirmBind:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_confirm_bind = self:GetChecked() and true or false
@@ -1131,7 +1244,7 @@ local cbAutoDeleteMail = make_check(
   "WeirdChromieOptionAutoDeleteMail",
   "Auto-delete Manabonks",
   "Automatically take and destroy The Mischief Maker from Minigob Manabonk mail, then delete the mail.",
-  COL_L, -240)
+  "A", 0, -176)
 cbAutoDeleteMail:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_delete_mail = self:GetChecked() and true or false
@@ -1141,7 +1254,7 @@ local cbAutoDismount = make_check(
   "WeirdChromieOptionAutoDismount",
   "Auto-dismount flying mounts when attacking",
   "Automatically dismount from a flying mount when attempting an attack.",
-  COL_L, -264)
+  "A", 0, -200)
 cbAutoDismount:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_dismount = self:GetChecked() and true or false
@@ -1151,59 +1264,40 @@ local cbNoRightClickAttack = make_check(
   "WeirdChromieOptionNoRightClickAttack",
   "Disable right-click to attack enemies",
   "Stop right-clicking from attacking or targeting an alive enemy. Right-dragging the camera and releasing over a mob no longer pulls or swaps target.",
-  COL_L, -288)
+  "A", 0, -224)
 cbNoRightClickAttack:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.no_rightclick_attack = self:GetChecked() and true or false
 end)
 
 ------------------------------
+-- Left column: Debug
+------------------------------
+make_header("Debug", "C", 0)
+
+local cbDebug = make_check(
+  "WeirdChromieOptionDebug",
+  "Debug capture (print silenced messages)",
+  "When enabled, every system message WeirdChromie silences is also printed to the chat frame along with the pattern that caught it. Useful for adding new patterns.",
+  "C", 0, -22)
+cbDebug:SetScript("OnClick", function(self)
+  WeirdChromieDB = WeirdChromieDB or {}
+  WeirdChromieDB.debug = self:GetChecked() and true or false
+end)
+
+------------------------------
 -- Right column: Loot Rolls
 ------------------------------
-make_header("Loot Rolls", COL_R, -64)
+make_header("Loot Rolls", "B", 0)
 
--- JC design roll dropdown: Off / Pass / Greed / Need.
--- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
-local jc_roll_choices = {
+-- Stored roll values: false (off), 0 (pass), 1 (need), 2 (greed),
+-- 3 (disenchant).
+local roll_choices = {
   { text = "Off",   value = false },
   { text = "Pass",  value = 0 },
   { text = "Greed", value = 2 },
   { text = "Need",  value = 1 },
 }
-
-local function jc_roll_label(value)
-  for _, c in ipairs(jc_roll_choices) do
-    if c.value == value then return c.text end
-  end
-  return "Off"
-end
-
-local jcLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-jcLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -88)
-jcLabel:SetText("JC Recipes")
-jcLabel.tooltipText = "Auto-roll on the BoP jewelcrafting designs that drop from Northrend dungeon bosses."
-
-local jcDropdown = CreateFrame("Frame", "WeirdChromieOptionJCDropdown", optionsPanel, "UIDropDownMenuTemplate")
-jcDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -108)
-UIDropDownMenu_SetWidth(jcDropdown, 100)
-
-UIDropDownMenu_Initialize(jcDropdown, function()
-  for _, c in ipairs(jc_roll_choices) do
-    local info = UIDropDownMenu_CreateInfo()
-    info.text = c.text
-    info.value = c.value
-    info.checked = (WeirdChromieDB and WeirdChromieDB.jc_design_roll == c.value)
-    info.func = function(self)
-      WeirdChromieDB = WeirdChromieDB or {}
-      WeirdChromieDB.jc_design_roll = self.value
-      UIDropDownMenu_SetText(jcDropdown, jc_roll_label(self.value))
-    end
-    UIDropDownMenu_AddButton(info)
-  end
-end)
-
--- BoE green dropdown: Off / Pass / Greed / Need / DE.
--- Stored value: false (off), 0 (pass), 1 (need), 2 (greed), 3 (disenchant).
 local boe_roll_choices = {
   { text = "Off",   value = false },
   { text = "Pass",  value = 0 },
@@ -1212,68 +1306,23 @@ local boe_roll_choices = {
   { text = "Disenchant", value = 3 },
 }
 
-local function boe_roll_label(value)
-  for _, c in ipairs(boe_roll_choices) do
-    if c.value == value then return c.text end
-  end
-  return "Off"
-end
+-- BoP jewelcrafting designs from Northrend dungeon bosses.
+local jcDropdown = make_roll_dropdown(
+  "WeirdChromieOptionJCDropdown", "JC Recipes", roll_choices, "jc_design_roll", "B", 0, -22)
 
-local boeLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-boeLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -140)
-boeLabel:SetText("BoE Greens")
-boeLabel.tooltipText = "Auto-roll on uncommon (green) BoE drops."
+-- Frozen Orb from heroic 5-man bosses. Only fires inside a 5-man dungeon.
+local frozenDropdown = make_roll_dropdown(
+  "WeirdChromieOptionFrozenDropdown", "Frozen Orb", roll_choices, "frozen_orb_roll", "B", 0, -50)
 
-local boeDropdown = CreateFrame("Frame", "WeirdChromieOptionBoEDropdown", optionsPanel, "UIDropDownMenuTemplate")
-boeDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -160)
-UIDropDownMenu_SetWidth(boeDropdown, 120)
-
-UIDropDownMenu_Initialize(boeDropdown, function()
-  for _, c in ipairs(boe_roll_choices) do
-    local info = UIDropDownMenu_CreateInfo()
-    info.text = c.text
-    info.value = c.value
-    info.checked = (WeirdChromieDB and WeirdChromieDB.boe_green_roll == c.value)
-    info.func = function(self)
-      WeirdChromieDB = WeirdChromieDB or {}
-      WeirdChromieDB.boe_green_roll = self.value
-      UIDropDownMenu_SetText(boeDropdown, boe_roll_label(self.value))
-    end
-    UIDropDownMenu_AddButton(info)
-  end
-end)
-
--- Frozen Orb roll dropdown: Off / Pass / Greed / Need (reuses jc_roll_choices).
--- Stored value: false (off), 0 (pass), 1 (need), or 2 (greed).
-local frozenLabel = optionsPanel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-frozenLabel:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R + 16, -192)
-frozenLabel:SetText("Frozen Orb")
-frozenLabel.tooltipText = "Auto-roll on Frozen Orb from heroic 5-man dungeon bosses. Only fires inside a 5-man dungeon."
-
-local frozenDropdown = CreateFrame("Frame", "WeirdChromieOptionFrozenDropdown", optionsPanel, "UIDropDownMenuTemplate")
-frozenDropdown:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", COL_R, -212)
-UIDropDownMenu_SetWidth(frozenDropdown, 100)
-
-UIDropDownMenu_Initialize(frozenDropdown, function()
-  for _, c in ipairs(jc_roll_choices) do
-    local info = UIDropDownMenu_CreateInfo()
-    info.text = c.text
-    info.value = c.value
-    info.checked = (WeirdChromieDB and WeirdChromieDB.frozen_orb_roll == c.value)
-    info.func = function(self)
-      WeirdChromieDB = WeirdChromieDB or {}
-      WeirdChromieDB.frozen_orb_roll = self.value
-      UIDropDownMenu_SetText(frozenDropdown, jc_roll_label(self.value))
-    end
-    UIDropDownMenu_AddButton(info)
-  end
-end)
+-- Uncommon (green) BoE drops.
+local boeDropdown = make_roll_dropdown(
+  "WeirdChromieOptionBoEDropdown", "BoE Greens", boe_roll_choices, "boe_green_roll", "B", 0, -78)
 
 local cbBoeSkipDeWeapons = make_check(
   "WeirdChromieOptionBoeSkipDeWeapons",
   "Do not DE weapons/shields",
   "When the BoE roll is Disenchant, roll Greed on weapons and shields instead.",
-  COL_R + 16, -238)
+  "B", INDENT, -104)
 cbBoeSkipDeWeapons:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.boe_skip_de_weapons = self:GetChecked() and true or false
@@ -1283,22 +1332,22 @@ local cbAutoPass = make_check(
   "WeirdChromieOptionAutoPass",
   "Auto-pass on bandage and cooking recipes",
   "Automatically pass on group loot rolls for Heavy Frostweave Bandage and dungeon cooking recipes.",
-  COL_R, -262)
+  "B", 0, -128)
 cbAutoPass:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.auto_pass_recipes = self:GetChecked() and true or false
 end)
 
 ------------------------------
--- Bottom (full width): Encounter Helpers
+-- Right column: Encounter Helpers
 ------------------------------
-make_header("Encounter Helpers", COL_L, -322)
+make_header("Encounter Helpers", "B", -164)
 
 local cbDrakeEnabled = make_check(
   "WeirdChromieOptionDrakeEnabled",
   "Show Oculus drake essence button",
   "Show the movable drake-essence quick-use button while inside The Oculus and holding any drake essence in your bags.",
-  COL_L, -344)
+  "B", 0, -186)
 cbDrakeEnabled:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.drake_enabled = self:GetChecked() and true or false
@@ -1309,16 +1358,13 @@ local cbDrakeLocked = make_check(
   "WeirdChromieOptionDrakeLocked",
   "Lock position",
   "When unlocked, left-click and drag the drake-essence button to move it. Lock to prevent accidental drags.",
-  COL_L, -344)
--- Place on the same row as cbDrakeEnabled, just past its label.
-cbDrakeLocked:ClearAllPoints()
-cbDrakeLocked:SetPoint("LEFT", _G["WeirdChromieOptionDrakeEnabledText"], "RIGHT", 16, 0)
+  "B", INDENT, -210)
 cbDrakeLocked:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.drake_locked = self:GetChecked() and true or false
 end)
 
-local btnDrakeReset = CreateFrame("Button", "WeirdChromieOptionDrakeReset", optionsPanel, "UIPanelButtonTemplate")
+local btnDrakeReset = CreateFrame("Button", "WeirdChromieOptionDrakeReset", content, "UIPanelButtonTemplate")
 btnDrakeReset:SetWidth(110)
 btnDrakeReset:SetHeight(22)
 btnDrakeReset:SetPoint("LEFT", _G["WeirdChromieOptionDrakeLockedText"], "RIGHT", 12, 0)
@@ -1334,7 +1380,7 @@ local cbSkytalon = make_check(
   "WeirdChromieOptionSkytalon",
   "Self-cast Skytalon heals",
   "Eye of Eternity Phase 3, override Revivify and Life Burst to cast on yourself if you have no target or the target is hostile.",
-  COL_L, -368)
+  "B", 0, -234)
 cbSkytalon:SetScript("OnClick", function(self)
   WeirdChromieDB = WeirdChromieDB or {}
   WeirdChromieDB.skytalon_selfcast = self:GetChecked() and true or false
@@ -1347,6 +1393,7 @@ end)
 
 optionsPanel:SetScript("OnShow", function()
   WeirdChromieDB = WeirdChromieDB or {}
+  layout()
   cbSilence:SetChecked(WeirdChromieDB.silence ~= false)
   cbGossip:SetChecked(WeirdChromieDB.auto_gossip ~= false)
   cbAutoPass:SetChecked(WeirdChromieDB.auto_pass_recipes == true)
@@ -1355,9 +1402,10 @@ optionsPanel:SetScript("OnShow", function()
   cbAutoDeleteMail:SetChecked(WeirdChromieDB.auto_delete_mail ~= false)
   cbAutoConfirmBind:SetChecked(WeirdChromieDB.auto_confirm_bind ~= false)
   cbBlockDalaran:SetChecked(WeirdChromieDB.block_dalaran_npc ~= false)
-  UIDropDownMenu_SetText(jcDropdown, jc_roll_label(WeirdChromieDB.jc_design_roll))
-  UIDropDownMenu_SetText(frozenDropdown, jc_roll_label(WeirdChromieDB.frozen_orb_roll))
-  UIDropDownMenu_SetText(boeDropdown, boe_roll_label(WeirdChromieDB.boe_green_roll))
+  cbShutUpRhonin:SetChecked(WeirdChromieDB.shut_up_rhonin == true)
+  jcDropdown.refresh()
+  frozenDropdown.refresh()
+  boeDropdown.refresh()
   cbBoeSkipDeWeapons:SetChecked(WeirdChromieDB.boe_skip_de_weapons ~= false)
   cbDrakeEnabled:SetChecked(WeirdChromieDB.drake_enabled ~= false)
   cbDrakeLocked:SetChecked(WeirdChromieDB.drake_locked ~= false)
@@ -1365,6 +1413,7 @@ optionsPanel:SetScript("OnShow", function()
   cbDebug:SetChecked(WeirdChromieDB.debug == true)
   if update_drake_button then update_drake_button() end
 end)
+optionsPanel:SetScript("OnSizeChanged", layout)
 optionsPanel:SetScript("OnHide", function()
   if update_drake_button then update_drake_button() end
 end)
